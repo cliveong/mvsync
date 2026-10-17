@@ -9,11 +9,15 @@ from mvsync.align_store import (
     alignment_to_dict,
     find_alignments,
     load_alignment,
+    load_newest_alignment,
     make_track_id,
+    prune_other_alignments,
     save_alignment,
     video_id_from_alignment_path,
 )
 from mvsync.timeline import Alignment, Anchor, SkipSpan
+
+TRACK_ID = make_track_id("Artist", "Title")
 
 
 def sample_alignment() -> Alignment:
@@ -105,3 +109,40 @@ def test_find_alignments_missing_dir(tmp_path):
 def test_video_id_from_alignment_path(tmp_path):
     path = tmp_path / "dQw4w9WgXcQ__track-abc.json"
     assert video_id_from_alignment_path(path) == "dQw4w9WgXcQ"
+
+
+def _alignment(video_id, track_id=TRACK_ID):
+    from mvsync.timeline import Alignment, Anchor
+
+    return Alignment(
+        video_id=video_id,
+        track_id=track_id,
+        video_duration_s=20.0,
+        track_duration_s=20.0,
+        anchors=[Anchor(video_s=0.0, spotify_s=0.0), Anchor(video_s=10.0, spotify_s=10.0)],
+    )
+
+
+def test_load_newest_alignment_prefers_the_most_recent(tmp_path):
+    old = save_alignment(tmp_path, _alignment("oldv"))
+    os.utime(old, (1000.0, 1000.0))
+    new = save_alignment(tmp_path, _alignment("newv"))
+    os.utime(new, (2000.0, 2000.0))
+
+    loaded = load_newest_alignment(tmp_path, TRACK_ID)
+
+    assert loaded is not None
+    assert loaded[2] == "newv"
+
+
+def test_prune_other_alignments_keeps_the_chosen_map_and_other_tracks(tmp_path):
+    keep = save_alignment(tmp_path, _alignment("keepv"))
+    gone = save_alignment(tmp_path, _alignment("gonev"))
+    other_track_id = make_track_id("Someone", "Else")
+    other = save_alignment(tmp_path, _alignment("x", track_id=other_track_id))
+
+    removed = prune_other_alignments(tmp_path, TRACK_ID, "keepv")
+
+    assert removed == [gone]
+    assert keep.is_file()
+    assert other.is_file()

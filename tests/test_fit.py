@@ -215,12 +215,11 @@ def test_watch_observes_state_dataclass():
 
 
 def test_load_stored_returns_alignment_and_offset(tmp_path):
-    from mvsync.align_store import save_alignment
-    from mvsync.sync_runtime import _load_stored
+    from mvsync.align_store import load_newest_alignment, save_alignment
 
     alignment = make_alignment(10, span_s=90.0, track_duration_s=100.0)
     save_alignment(tmp_path, alignment, offset_s=0.25)
-    result = _load_stored(alignment.track_id, tmp_path)
+    result = load_newest_alignment(tmp_path, alignment.track_id)
     assert result is not None
     loaded, offset_s, video_id = result
     assert video_id == alignment.video_id
@@ -229,17 +228,16 @@ def test_load_stored_returns_alignment_and_offset(tmp_path):
 
 
 def test_load_stored_missing_returns_none(tmp_path):
-    from mvsync.sync_runtime import _load_stored
+    from mvsync.align_store import load_newest_alignment
 
-    assert _load_stored("nope", tmp_path) is None
+    assert load_newest_alignment(tmp_path, "nope") is None
 
 
 def test_load_stored_skips_corrupt_alignment(tmp_path):
     import os
     import time
 
-    from mvsync.align_store import save_alignment
-    from mvsync.sync_runtime import _load_stored
+    from mvsync.align_store import load_newest_alignment, save_alignment
 
     good = make_alignment(10, span_s=90.0, track_duration_s=100.0)
     save_alignment(tmp_path, good, offset_s=0.0)
@@ -247,15 +245,14 @@ def test_load_stored_skips_corrupt_alignment(tmp_path):
     corrupt.write_text("{not valid json", encoding="utf-8")
     stamp = time.time() + 10
     os.utime(corrupt, (stamp, stamp))
-    result = _load_stored(good.track_id, tmp_path)
+    result = load_newest_alignment(tmp_path, good.track_id)
     assert result is not None
     _, _, video_id = result
     assert video_id == good.video_id
 
 
 def test_load_stored_roundtrips_video_id_with_double_underscore(tmp_path):
-    from mvsync.align_store import save_alignment
-    from mvsync.sync_runtime import _load_stored
+    from mvsync.align_store import load_newest_alignment, save_alignment
 
     base = make_alignment(10, span_s=90.0, track_duration_s=100.0)
     awkward = Alignment(
@@ -267,7 +264,7 @@ def test_load_stored_roundtrips_video_id_with_double_underscore(tmp_path):
         skips=base.skips,
     )
     save_alignment(tmp_path, awkward, offset_s=0.0)
-    result = _load_stored(awkward.track_id, tmp_path)
+    result = load_newest_alignment(tmp_path, awkward.track_id)
     assert result is not None
     _, _, video_id = result
     assert video_id == "ab__cd"

@@ -20,11 +20,10 @@ from pathlib import Path
 
 from mvsync import paths, session
 from mvsync.align_store import (
-    find_alignments,
     load_alignment,
+    load_newest_alignment,
     make_track_id,
     save_alignment,
-    video_id_from_alignment_path,
 )
 from mvsync.clock import extrapolate
 from mvsync.match import BACKWARD_JUMP_S, END_EPS_S, FORWARD_JUMP_S
@@ -80,7 +79,7 @@ def _run_play(
         if stored is not None:
             alignment, offset_s = stored
     else:
-        stored = _load_stored(track_id, store)
+        stored = load_newest_alignment(store, track_id)
         if stored is not None:
             alignment, offset_s, video_id = stored
 
@@ -326,7 +325,7 @@ def _start_track(
         _freeze_video(mpv)
         return None, 0.0, None, True
     if url is None:
-        stored = _load_stored(track_id, store)
+        stored = load_newest_alignment(store, track_id)
         if stored is not None:
             alignment, offset_s, video_id = stored
             if announce:
@@ -421,24 +420,6 @@ def _wait_media_loaded(
             pass
         time.sleep(0.2)
     return False
-
-
-def _load_stored(track_id: str, store: Path) -> tuple[Alignment, float, str] | None:
-    matches = find_alignments(store, track_id)
-    if not matches:
-        return None
-    for match in matches:
-        video_id = video_id_from_alignment_path(match)
-        try:
-            loaded = load_alignment(store, video_id, track_id)
-        except Exception as exc:  # noqa: BLE001 - a corrupt file must not kill playback
-            print(f"[play] ignoring unreadable alignment {match.name}: {exc}")
-            continue
-        if loaded is not None:
-            if len(matches) > 1:
-                print(f"[play] {len(matches)} alignments for this track; using {video_id}")
-            return loaded[0], loaded[1], video_id
-    return None
 
 
 def _read_key() -> str:

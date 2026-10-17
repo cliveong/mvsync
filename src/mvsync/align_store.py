@@ -108,3 +108,26 @@ def find_alignments(store_dir: Path, track_id: str) -> list[Path]:
 def video_id_from_alignment_path(path: Path) -> str:
     # rsplit: video ids may contain "__"; track ids never do (make_track_id slug).
     return path.name.rsplit("__", 1)[0]
+
+
+def load_newest_alignment(store_dir: Path, track_id: str) -> tuple[Alignment, float, str] | None:
+    """The most recently written loadable alignment for a track."""
+    for match in find_alignments(store_dir, track_id):
+        video_id = video_id_from_alignment_path(match)
+        try:
+            loaded = load_alignment(store_dir, video_id, track_id)
+        except Exception:  # noqa: BLE001 - a corrupt file must not kill playback
+            continue
+        if loaded is not None:
+            return loaded[0], loaded[1], video_id
+    return None
+
+
+def prune_other_alignments(store_dir: Path, track_id: str, keep_video_id: str) -> list[Path]:
+    """Delete other alignments for a track; a track has one authoritative MV."""
+    removed: list[Path] = []
+    for match in find_alignments(store_dir, track_id):
+        if video_id_from_alignment_path(match) != keep_video_id:
+            match.unlink(missing_ok=True)
+            removed.append(match)
+    return removed
