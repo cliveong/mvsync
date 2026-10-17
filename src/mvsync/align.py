@@ -34,15 +34,16 @@ UNMATCHED_COST_THRESHOLD = 0.22
 MIN_SANE_ANCHORS = 4
 MIN_SANE_COVERAGE = 0.25
 MAX_SANE_RATE_DEVIATION = 0.1
+MIN_SANE_RATE_SHARE = 0.5
 
 
 def looks_sane(alignment: Alignment, track_duration_s: float) -> bool:
     """Cheap heuristic that the video really matches the recorded song.
 
     A wrong pick (a different song, a live take with different audio) yields a
-    sparse map covering little of the track, or nonsensical segment rates.
-    Remixes of the right song still pass: chroma matching cannot tell an edit
-    from the original.
+    sparse map covering little of the track, or nonsensical segment rates. An
+    MV that re-edits the arrangement still passes: its cuts smear a minority
+    of the covered span into off-rate segments while the rest keeps rate 1.
     """
     anchors = alignment.anchors
     if len(anchors) < MIN_SANE_ANCHORS:
@@ -50,9 +51,12 @@ def looks_sane(alignment: Alignment, track_duration_s: float) -> bool:
     covered = anchors[-1].spotify_s - anchors[0].spotify_s
     if track_duration_s > 0.0 and covered < MIN_SANE_COVERAGE * track_duration_s:
         return False
-    return all(
-        abs(segment.rate - 1.0) <= MAX_SANE_RATE_DEVIATION for segment in alignment.segments
+    sane_span_s = sum(
+        segment.spotify_end_s - segment.spotify_start_s
+        for segment in alignment.segments
+        if abs(segment.rate - 1.0) <= MAX_SANE_RATE_DEVIATION
     )
+    return sane_span_s >= MIN_SANE_RATE_SHARE * covered
 
 
 def anchors_and_skips_from_path(

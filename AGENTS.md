@@ -48,6 +48,10 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
   stay `(recording, video)`. Without the unflip, any recording longer than the
   MV audio dies in the cost lookup with `IndexError` (regression test:
   `tests/test_align_dsp.py::test_recording_longer_than_video_keeps_orientation`).
+- `looks_sane` accepts re-edited MVs via `MIN_SANE_RATE_SHARE`: arrangement
+  cuts smear a minority of the covered span into off-rate segments, so a
+  majority in rate-1 segments passes. Wrong songs still fail on anchors or
+  coverage, which stays strict.
 - SMTC positions are coarse (about 0.5 s quantized, refreshed every few
   seconds). Never use raw positions: go through `clock.extrapolate`, and keep
   the `END_EPS_S` near-end tolerance before flagging jumps (the timeline

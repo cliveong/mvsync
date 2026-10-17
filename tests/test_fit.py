@@ -9,7 +9,7 @@ from mvsync.mv_search import Candidate
 from mvsync.radio import RadioWatch, _capture_lost_audio
 from mvsync.spotify_smtc import SpotifyState
 from mvsync.sync_runtime import _rough_jump_delta
-from mvsync.timeline import Alignment, Anchor
+from mvsync.timeline import Alignment, Anchor, SkipSpan
 
 
 def make_alignment(
@@ -43,6 +43,47 @@ def test_looks_sane_rejects_low_coverage():
 
 def test_looks_sane_rejects_wild_rates():
     assert not looks_sane(make_alignment(10, rate=1.5), 200.0)
+
+
+def test_looks_sane_accepts_an_edited_mv_with_a_sane_majority():
+    anchors = [
+        Anchor(video_s=6.0, spotify_s=0.0),
+        Anchor(video_s=58.0, spotify_s=52.0),
+        Anchor(video_s=110.0, spotify_s=104.0),
+        Anchor(video_s=162.0, spotify_s=156.0),
+        Anchor(video_s=170.0, spotify_s=160.0),
+        Anchor(video_s=190.0, spotify_s=184.5),
+        Anchor(video_s=210.0, spotify_s=209.0),
+    ]
+    alignment = Alignment(
+        video_id="video",
+        track_id="track",
+        video_duration_s=220.0,
+        track_duration_s=209.0,
+        anchors=anchors,
+        skips=[SkipSpan(video_start_s=162.5, video_end_s=169.5, reason="internal")],
+    )
+    assert looks_sane(alignment, 209.0)
+
+
+def test_looks_sane_rejects_an_edited_mv_when_most_rates_are_off():
+    anchors = [
+        Anchor(video_s=5.0, spotify_s=0.0),
+        Anchor(video_s=15.0, spotify_s=10.0),
+        Anchor(video_s=25.0, spotify_s=20.0),
+        Anchor(video_s=45.0, spotify_s=40.0),
+        Anchor(video_s=101.0, spotify_s=140.0),
+        Anchor(video_s=165.0, spotify_s=240.0),
+    ]
+    alignment = Alignment(
+        video_id="video",
+        track_id="track",
+        video_duration_s=200.0,
+        track_duration_s=240.0,
+        anchors=anchors,
+        skips=[SkipSpan(video_start_s=27.0, video_end_s=42.0, reason="internal")],
+    )
+    assert not looks_sane(alignment, 240.0)
 
 
 def _write_silent_wav(path: Path, seconds: float = 0.5) -> Path:

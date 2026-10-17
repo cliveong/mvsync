@@ -153,7 +153,9 @@ deleted together with the map; only a fit that found no matching candidate
 keeps its wav file for a manual refit. During the background fit the
 alignment is also checked against the
 picked MV, and a wrong pick (a live clip, a different song) is rejected and the
-next search candidate is tried automatically.
+next search candidate is tried automatically. An MV that re-edits the song's
+arrangement still fits: the map is exact wherever the MV carries the music and
+approximate through its cuts.
 
 First-listen fits run in the background. If you quit the session while a fit is
 still running, it waits for that fit before exiting so the map is not lost.
