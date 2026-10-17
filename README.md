@@ -79,6 +79,16 @@ transitions reuse it automatically. `play --pick N` picks candidate N for the
 MV used on an unscanned track's first listen (the same list is printed), and
 the menu accepts it too: at the `select:` prompt type for example `2 --pick 3`.
 
+### Picking a different MV
+
+Menu option `4` (or `run.bat fix`) opens a window listing the ranked
+candidates for the current track, with the one currently in use marked.
+Double-click a row to preview it in the browser, then press `Use this MV`:
+Spotify rewinds and plays the track once while the new MV is recorded, and
+the map is saved for it (replacing the others for that track). The automatic
+search favors the track artist's own video, so wrong picks get rarer and
+this window fixes what still slips through.
+
 ### Pausing and skipping
 
 During a `play` session:

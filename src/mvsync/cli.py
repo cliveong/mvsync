@@ -16,6 +16,7 @@ MENU = """
 1) doctor            check environment, devices, and the Spotify session
 2) scan [url] [--pick N]   scan the current track (auto-finds its MV)
 3) play [url] [--pick N]   play synced to Spotify (new tracks sync next time)
+4) fix             pick the right MV for the current track (opens a window)
 0) quit
 """.strip()
 
@@ -83,6 +84,12 @@ def _play(url: str, pick: int | None = None) -> int:
     return run_play(url or None, pick=pick)
 
 
+def _fix() -> int:
+    from mvsync.gui import run_fixer
+
+    return run_fixer()
+
+
 def _parse_menu_args(choice: str) -> tuple[str, int | None]:
     """Split "3 <url or --pick N>" into the optional url and candidate number."""
     parts = choice.split()
@@ -113,6 +120,8 @@ def menu() -> int:
             return 0
         if choice == "1":
             doctor()
+        elif choice == "4":
+            _fix()
         elif choice[:1] in ("2", "3"):
             url, pick = _parse_menu_args(choice)
             try:
@@ -146,6 +155,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="use candidate N for an unscanned track's MV",
     )
+    subparsers.add_parser("fix", help="pick the right MV for the current track (opens a window)")
     return parser
 
 
@@ -173,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
             return _scan(args.url or "", args.pick)
         if args.command == "play":
             return _play(args.url or "", args.pick)
+        if args.command == "fix":
+            return _fix()
     except KeyboardInterrupt:
         print()
         return 130

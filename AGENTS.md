@@ -33,7 +33,7 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
 - Pure logic, unit-testable with synthetic data: `clock`, `align`, `match`,
   `timeline`, `align_store`, `sync_planner`, `mv_search` scoring.
 - IO adapters and runtimes: `spotify_smtc`, `capture`, `mpv_ctl`, `mv_audio`,
-  `sync_runtime`, `scan_runtime`, `radio`, `session`, `paths`.
+  `sync_runtime`, `scan_runtime`, `radio`, `session`, `paths`, `gui`.
 
 ## Invariants (each one cost a debugging session to learn)
 
@@ -76,6 +76,9 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
   `[doctor]`.
 - One session at a time is enforced by `data/session.lock` (pid-based, stale
   locks are stolen). `play` and `scan` both claim it.
+- A track has one authoritative map: `scan`/`fix` saving a map prunes other
+  maps with the same track id (`prune_other_alignments`); `play` falls back to
+  the newest by mtime (`load_newest_alignment`).
 
 ## Workflow
 
