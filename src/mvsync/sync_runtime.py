@@ -195,6 +195,7 @@ def _follow(
 
             try:
                 video_position = mpv.time_pos
+                video_eof = mpv.eof_reached
             except Exception:  # noqa: BLE001 - mpv was closed from its own window
                 print("[play] mpv closed; stopping")
                 break
@@ -226,7 +227,7 @@ def _follow(
                         target = max(0.0, rough_prev_video + delta)
                         mpv.seek_absolute(target)
                         print(f"[play] followed your seek (rough mode) to {target:.0f}s")
-                wanted_pause = frozen or not state.playing
+                wanted_pause = frozen or not state.playing or video_eof
                 if mpv.paused != wanted_pause:
                     mpv.set_paused(wanted_pause)
                 rough_prev_position = position

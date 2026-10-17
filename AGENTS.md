@@ -50,6 +50,9 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
   playback: YouTube 403s mpv's direct streaming. A failed download (or a track
   with no MV) must never kill the session: freeze the previous video
   (`_freeze_video`) and keep following, recording the listen when possible.
+- When the MV is shorter than the track, it must hold its last frame while the
+  music continues: mpv runs with `keep_open=True`, and rough mode keeps the
+  video paused on `eof_reached` rather than unpausing a finished video.
 - First-listen recordings are deleted once their fit saves a map and after
   every `scan` (success or abort); a failed fit keeps the wav so the listen
   can be refitted by hand. Interrupted listens (pause over 2 s, seek) are

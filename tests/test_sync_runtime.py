@@ -12,11 +12,20 @@ from mvsync.timeline import Alignment, Anchor
 
 
 class FakeMpv:
-    def __init__(self, *, paused: bool = False, path: str = "", duration=None, time_pos=0.0):
+    def __init__(
+        self,
+        *,
+        paused: bool = False,
+        path: str = "",
+        duration=None,
+        time_pos=0.0,
+        eof_reached: bool = False,
+    ):
         self.paused = paused
         self.path = path
         self.duration = duration
         self.time_pos = time_pos
+        self.eof_reached = eof_reached
         self.calls: list[tuple] = []
 
     def start(self) -> None:
@@ -217,6 +226,30 @@ def test_follow_rough_mode_unpauses_when_playing(tmp_path, monkeypatch):
     assert rc == 0
     assert ("pause", False) in mpv.calls
     assert radio.started is True
+
+
+def test_follow_rough_mode_holds_the_last_frame_at_video_end(tmp_path):
+    import mvsync.sync_runtime as sr
+
+    state = make_state(playing=True)
+    mpv = FakeMpv(paused=True, eof_reached=True, duration=180.0, time_pos=180.0)
+    bridge = FakeBridge([state, state])
+
+    rc = sr._follow(
+        bridge,
+        mpv,
+        make_track_id(state.artist, state.title),
+        None,
+        0.0,
+        tmp_path,
+        0.01,
+        radio=None,
+        frozen=False,
+    )
+
+    assert rc == 0
+    assert frozen_calls(mpv) == []
+    assert mpv.paused is True
 
 
 def test_track_wrapped_detects_repeat_one_restart():

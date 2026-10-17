@@ -42,6 +42,7 @@ class MpvController:
             mpv_location=str(mpv_path),
             config_dir=str(config_dir),
             idle=True,
+            keep_open=True,
             mute=True,
             terminal="no",
             **extra_args,
@@ -73,6 +74,10 @@ class MpvController:
     @property
     def paused(self) -> bool:
         return bool(self._require().pause)
+
+    @property
+    def eof_reached(self) -> bool:
+        return bool(self._require().eof_reached)
 
     def seek_absolute(self, seconds: float) -> None:
         self._require().seek(float(seconds), "absolute")

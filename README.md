@@ -176,6 +176,8 @@ still running, it waits for that fit before exiting so the map is not lost.
   downloaded to `data/cache` before playback, which also keeps seeking instant.
 - If no MV is found for a track (or the download fails), the previous video
   freezes until the next track; Spotify keeps playing.
+- If the MV is shorter than the track, the video holds its last frame for the
+  rest of the song instead of ending early.
 - A remix of the right song cannot be told apart from the original by audio
   matching alone; the ranking (title, channel, length) guards that. Force the
   right video with a URL if needed.
