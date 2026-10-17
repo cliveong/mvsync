@@ -1,0 +1,21 @@
+[project]
+name = "mvsync"
+version = "0.1.0"
+description = "Watch a YouTube music video in mpv while the lossless Spotify track stays the master clock."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "integration: requires real hardware, network, or external tools",
+    "dsp: exercises the librosa DTW pipeline (slower)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]

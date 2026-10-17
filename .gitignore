@@ -1,0 +1,13 @@
+# Environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Downloaded portable tools and generated mpv config (recreated by bootstrap.py)
+tools/
+
+# Recordings, PCM caches, alignment data (recreated on demand)
+data/

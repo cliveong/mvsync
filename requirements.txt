@@ -1,0 +1,6 @@
+librosa>=0.10.2
+numpy>=1.26
+python-mpv-jsonipc>=1.2.3
+scipy>=1.12
+soundcard>=0.4.2
+winsdk>=1.0.0b10
