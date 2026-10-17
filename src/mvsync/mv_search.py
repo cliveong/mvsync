@@ -29,6 +29,8 @@ MV_KEYWORDS = (
     "뮤직비디오",
     "official mv",
 )
+ARTIST_TITLE_BONUS = 3.0
+ARTIST_CHANNEL_BONUS = 2.0
 BAD_KEYWORDS = (
     "lyric",
     "audio",
@@ -120,10 +122,11 @@ def _score(candidate: Candidate, track_duration_s: float, artist: str, title: st
     if title.strip() and title.lower() in text:
         score += 2.0
     if artist.strip() and artist.lower() in text:
-        score += 1.0
+        score += ARTIST_TITLE_BONUS
     if candidate.channel and artist.strip() and artist.lower() in candidate.channel.lower():
-        score += 1.0
-    score += 2.0 * sum(1 for keyword in MV_KEYWORDS if _has_word(text, keyword))
+        score += ARTIST_CHANNEL_BONUS
+    if any(_has_word(text, keyword) for keyword in MV_KEYWORDS):
+        score += 2.0
     score -= 2.0 * sum(1 for keyword in BAD_KEYWORDS if _has_word(text, keyword))
     if _has_word(text, "official") or _has_word(candidate.channel.lower(), "official"):
         score += 1.0

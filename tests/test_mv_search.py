@@ -106,3 +106,34 @@ def test_candidate_lines_number_and_format():
         "candidate 1: Channel: Song MV (v1)",
         "candidate 2: (given url) (v2)",
     ]
+
+
+def test_rank_prefers_track_artist_remake_mv_over_original_artist_mv():
+    candidates = [
+        Candidate(
+            "VVO05mYGFY8",
+            "[MV] 태연 (TAEYEON)_ 만찬가 (晩餐歌 / BANSANKA) : J-POP REMAKE Vol.1",
+            222.0,
+            "1theK (원더케이)",
+        ),
+        Candidate(
+            "H0GbvPY_Yl8",
+            "[MV] TAEYEON_ BANSANKA : J-POP REMAKE Vol.1",
+            222.0,
+            "동네친구 강나미 [Kangnami]",
+        ),
+        Candidate("oZpYEEcvu5I", "tuki.『Bansanka』Official Music Video", 220.0, "tuki.(17)"),
+    ]
+    ranked = rank_candidates(candidates, 219.0, "TAEYEON", "Bansanka")
+    assert ranked[0].video_id == "VVO05mYGFY8"
+
+
+def test_score_gives_the_official_mv_phrase_bonus_once():
+    from mvsync.mv_search import _score
+
+    plain = Candidate("a", "TAEYEON To. X MV", 178.0, "SMTOWN")
+    phrase = Candidate("b", "TAEYEON To. X Official Music Video", 178.0, "SMTOWN")
+    assert (
+        _score(phrase, 170.4, "TAEYEON", "To. X")
+        == _score(plain, 170.4, "TAEYEON", "To. X") + 1.0
+    )
