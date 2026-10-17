@@ -42,6 +42,12 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
   to each query, so it is negative for maps made mid-track). `scan` saves
   `offset_s=-position_at_play`; the radio fit keeps the recording's own
   timeline (no pre-roll cut) and saves `offset_s=-position_at_record_start`.
+- `librosa.sequence.dtw(C=..., subseq=True)` flips the returned path when the
+  supplied cost matrix is taller than wide (it assumes an internal transpose
+  that never happened); `compute_alignment_from_audio` unflips it so path pairs
+  stay `(recording, video)`. Without the unflip, any recording longer than the
+  MV audio dies in the cost lookup with `IndexError` (regression test:
+  `tests/test_align_dsp.py::test_recording_longer_than_video_keeps_orientation`).
 - SMTC positions are coarse (about 0.5 s quantized, refreshed every few
   seconds). Never use raw positions: go through `clock.extrapolate`, and keep
   the `END_EPS_S` near-end tolerance before flagging jumps (the timeline

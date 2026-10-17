@@ -62,6 +62,20 @@ def test_subsequence_alignment_locates_leading_and_trailing_skips():
     )
 
 
+def test_recording_longer_than_video_keeps_orientation():
+    music = _progression([261.63, 293.66, 329.63, 349.23])  # C D E F, 8 s
+    tail = _progression([392.0, 440.0, 493.88], 1.5)  # G A B, 4.5 s outro
+    spotify = np.concatenate([music, tail])  # 12.5 s recording outlives the MV
+    video = music  # 8 s MV
+
+    alignment = _align(spotify, video)
+
+    assert alignment.spotify_to_video(0.0) == pytest.approx(0.0, abs=0.5)
+    assert alignment.spotify_to_video(4.0) == pytest.approx(4.0, abs=0.6)
+    assert alignment.spotify_to_video(11.0) >= 7.0
+    assert alignment.anchors[-1].video_s <= alignment.video_duration_s
+
+
 def test_internal_gap_becomes_skip_span():
     rng = np.random.default_rng(7)
     part_a = _progression([261.63, 293.66, 329.63])  # C D E, 6 s

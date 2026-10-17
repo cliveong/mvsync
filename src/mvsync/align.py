@@ -287,6 +287,10 @@ def compute_alignment_from_audio(
     cost_matrix = np.nan_to_num(cost_matrix, nan=1.0, posinf=1.0)
     _, path = librosa.sequence.dtw(C=cost_matrix, subseq=True)
     path_array = np.asarray(path)
+    if cost_matrix.shape[0] > cost_matrix.shape[1]:
+        # librosa flips a taller-than-wide subseq path assuming the caller
+        # transposed the matrix; ours is built (query, sequence) already.
+        path_array = path_array[:, ::-1]
     if path_array[0, 0] > path_array[-1, 0] or path_array[0, 1] > path_array[-1, 1]:
         path_array = path_array[::-1]
     points = [(int(spotify_frame), int(video_frame)) for spotify_frame, video_frame in path_array]
