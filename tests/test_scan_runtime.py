@@ -379,3 +379,93 @@ def test_scan_deletes_recording_after_saving_its_map(tmp_path, monkeypatch):
     assert not recording_path(tmp_path).exists()
     store = paths.ensure_dir(paths.alignments_dir(tmp_path))
     assert alignment_path(store, VIDEO_ID, TRACK_ID).is_file()
+
+
+def run_scan_with_candidates(monkeypatch, tmp_path, *, align, fetch=None, candidates=None):
+    from mvsync import scan_runtime, session
+
+    clock = StepClock(PLAY_PRESS)
+    toggles: list[float] = []
+    bridge = ScanBridge(clock, toggles)
+    FakeRecorder.instances = []
+    monkeypatch.setattr("mvsync.scan_runtime.time", clock)
+    monkeypatch.setattr(scan_runtime, "SpotifyBridge", lambda: bridge)
+    monkeypatch.setattr(scan_runtime, "LoopbackRecorder", lambda path: FakeRecorder(path, clock))
+    monkeypatch.setattr(scan_runtime, "wav_duration_s", lambda path: DURATION)
+    monkeypatch.setattr(scan_runtime, "align_against_candidates", align)
+    video_file = tmp_path / "vid.mp4"
+    video_file.write_bytes(b"x" * 32)
+    monkeypatch.setattr(
+        scan_runtime, "fetch_video_mp4", fetch or (lambda url, root=None: video_file)
+    )
+    if candidates is None:
+        candidates = [Candidate(VIDEO_ID, "", None, "")]
+    try:
+        return scan_runtime.scan_with_candidates(candidates, root=tmp_path)
+    finally:
+        session.release(tmp_path)
+
+
+def test_scan_with_candidates_records_and_saves(tmp_path, monkeypatch):
+    alignment = Alignment(
+        video_id=VIDEO_ID,
+        track_id=TRACK_ID,
+        video_duration_s=40.0,
+        track_duration_s=DURATION,
+        anchors=[Anchor(video_s=0.0, spotify_s=0.0), Anchor(video_s=20.0, spotify_s=20.0)],
+    )
+    result = run_scan_with_candidates(
+        monkeypatch, tmp_path, align=lambda *args, **kwargs: (alignment, VIDEO_ID)
+    )
+    assert result.video_id == VIDEO_ID
+    assert result.path.is_file()
+    assert not recording_path(tmp_path).exists()
+
+
+def test_scan_with_candidates_prunes_superseded_map(tmp_path, monkeypatch):
+    from mvsync import paths
+    from mvsync.align_store import alignment_path, save_alignment
+
+    store = paths.ensure_dir(paths.alignments_dir(tmp_path))
+    stale = Alignment(
+        video_id="stalev",
+        track_id=TRACK_ID,
+        video_duration_s=40.0,
+        track_duration_s=DURATION,
+        anchors=[Anchor(video_s=0.0, spotify_s=0.0), Anchor(video_s=20.0, spotify_s=20.0)],
+    )
+    save_alignment(store, stale)
+    alignment = Alignment(
+        video_id=VIDEO_ID,
+        track_id=TRACK_ID,
+        video_duration_s=40.0,
+        track_duration_s=DURATION,
+        anchors=[Anchor(video_s=0.0, spotify_s=0.0), Anchor(video_s=20.0, spotify_s=20.0)],
+    )
+    run_scan_with_candidates(
+        monkeypatch, tmp_path, align=lambda *args, **kwargs: (alignment, VIDEO_ID)
+    )
+    assert not alignment_path(store, "stalev", TRACK_ID).exists()
+    assert alignment_path(store, VIDEO_ID, TRACK_ID).is_file()
+
+
+def test_scan_with_candidates_refuses_while_session_busy(tmp_path, monkeypatch):
+    from mvsync import paths, scan_runtime
+
+    lock = paths.data_dir(tmp_path) / "session.lock"
+    paths.ensure_dir(lock.parent)
+    lock.write_text("12345", encoding="utf-8")
+    monkeypatch.setattr("mvsync.session._pid_alive", lambda pid: True)
+
+    with pytest.raises(RuntimeError, match="another session is already running"):
+        scan_runtime.scan_with_candidates([Candidate(VIDEO_ID, "", None, "")], root=tmp_path)
+
+
+def test_scan_with_candidates_discards_recording_on_abort(tmp_path, monkeypatch):
+    def align(*args, **kwargs):
+        raise ScanAborted("no candidate matched")
+
+    with pytest.raises(ScanAborted, match="no candidate matched"):
+        run_scan_with_candidates(monkeypatch, tmp_path, align=align)
+
+    assert not recording_path(tmp_path).exists()

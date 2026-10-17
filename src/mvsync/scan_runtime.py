@@ -14,17 +14,23 @@ import contextlib
 import os
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from mvsync import paths, session
-from mvsync.align_store import alignment_path, make_track_id, save_alignment
+from mvsync.align_store import (
+    alignment_path,
+    make_track_id,
+    prune_other_alignments,
+    save_alignment,
+)
 from mvsync.capture import SILENT_PEAK_DBFS, LoopbackRecorder
 from mvsync.clock import extrapolate
 from mvsync.match import BACKWARD_JUMP_S, END_EPS_S, FORWARD_JUMP_S, align_against_candidates
 from mvsync.mv_audio import fetch_video_mp4, parse_video_id, wav_duration_s
 from mvsync.mv_search import Candidate, candidate_lines, pick_mv_candidates, prioritize, video_url
 from mvsync.radio import _discard
-from mvsync.spotify_smtc import SpotifyBridge
+from mvsync.spotify_smtc import SpotifyBridge, SpotifyState
 
 POLL_S = 0.25
 TRIM_SAFETY_S = 0.05
@@ -36,6 +42,14 @@ _DEBUG = os.environ.get("MVSYNC_SCAN_DEBUG") == "1"
 
 class ScanAborted(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    """The video chosen for the track and the map that was saved."""
+
+    video_id: str
+    path: Path
 
 
 def run_scan(url: str | None, *, root: Path | None = None, pick: int | None = None) -> int:
@@ -77,15 +91,7 @@ def _run_scan(
     elif not url:
         print("[scan] you can still switch the MV at the ready prompt (type its number)")
 
-    if state.playing:
-        print("[scan] pausing Spotify")
-        bridge.toggle_play_pause()
-        if not _wait_until(lambda: _playback_stopped(bridge), 3.0):
-            raise ScanAborted("could not pause Spotify")
-    bridge.seek(0.0)
-    position = _wait_start_position(bridge)
-    if position > 2.0:
-        print(f"[scan] warning: Spotify reports {position:.1f}s, scanning from there")
+    position = _pause_and_rewind(bridge, lambda message: None)
 
     input_prompt = (
         "[scan] press Enter to start recording and playback, "
@@ -98,11 +104,50 @@ def _run_scan(
             break
         if _apply_prompt_answer(candidates, answer):
             break
+    _record_and_fit(
+        candidates,
+        bridge=bridge,
+        state=state,
+        track_id=track_id,
+        position=position,
+        root=root,
+        on_progress=lambda message: None,
+    )
+
+
+def _pause_and_rewind(bridge: SpotifyBridge, on_progress: Callable[[str], None]) -> float:
+    """Pause playback, rewind to the start, and report the resulting position."""
+    state = bridge.current()
+    if state is not None and state.playing:
+        print("[scan] pausing Spotify")
+        on_progress("pausing")
+        bridge.toggle_play_pause()
+        if not _wait_until(lambda: _playback_stopped(bridge), 3.0):
+            raise ScanAborted("could not pause Spotify")
+    bridge.seek(0.0)
+    position = _wait_start_position(bridge)
+    if position > 2.0:
+        print(f"[scan] warning: Spotify reports {position:.1f}s, scanning from there")
+    return position
+
+
+def _record_and_fit(
+    candidates: list[Candidate],
+    *,
+    bridge: SpotifyBridge,
+    state: SpotifyState,
+    track_id: str,
+    position: float,
+    root: Path | None,
+    on_progress: Callable[[str], None],
+) -> ScanResult:
+    """Record one listen of the track, fit it against the candidates, and save the map."""
     rec_path = paths.recordings_dir(root) / f"{candidates[0].video_id}__{track_id}.wav"
     print(f"[scan] recording to {rec_path.name}")
     recorder = LoopbackRecorder(rec_path)
     try:
         recorder.start()
+        on_progress("recording")
         if not _wait_until(lambda: recorder.ready_epoch is not None, 3.0):
             recorder.stop()
             raise ScanAborted("the loopback device did not start")
@@ -133,6 +178,7 @@ def _run_scan(
         trim_s = max(0.0, play_press - ready - TRIM_SAFETY_S)
         print(f"[scan] peak {recorder.peak_db:.1f} dBFS; trimming {trim_s:.2f}s pre-roll")
         print("[scan] fitting the recording against the candidates (this takes a moment)")
+        on_progress("fitting")
         result = align_against_candidates(
             rec_path,
             candidates,
@@ -173,8 +219,46 @@ def _run_scan(
             print("[scan] overwriting the existing alignment")
         saved = save_alignment(store, alignment, offset_s=-position)
         print(f"[scan] saved {saved.name}")
+        removed = prune_other_alignments(store, track_id, video_id)
+        if removed:
+            print(f"[scan] removed {len(removed)} superseded alignment(s)")
+        on_progress("saved")
+        return ScanResult(video_id=video_id, path=saved)
     finally:
         _discard(rec_path)
+
+
+def scan_with_candidates(
+    candidates: list[Candidate],
+    *,
+    root: Path | None = None,
+    on_progress: Callable[[str], None] | None = None,
+) -> ScanResult:
+    """Record one listen of the current track and fit it against candidates in order."""
+    notify = on_progress or (lambda message: None)
+    session.claim(root)
+    try:
+        bridge = SpotifyBridge()
+        state = bridge.current()
+        if state is None or (not state.artist.strip() and not state.title.strip()):
+            raise ScanAborted("no Spotify session with track metadata")
+        track_id = make_track_id(state.artist, state.title)
+        position = _pause_and_rewind(bridge, notify)
+        rec_path = paths.recordings_dir(root) / f"{candidates[0].video_id}__{track_id}.wav"
+        try:
+            return _record_and_fit(
+                candidates,
+                bridge=bridge,
+                state=state,
+                track_id=track_id,
+                position=position,
+                root=root,
+                on_progress=notify,
+            )
+        finally:
+            _discard(rec_path)
+    finally:
+        session.release(root)
 
 
 def _apply_prompt_answer(candidates: list[Candidate], answer: str) -> bool:
