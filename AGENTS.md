@@ -12,9 +12,9 @@ current track and builds a per-track alignment map (anchors plus skip spans);
 ## Commands (from the repo root)
 
 ```
-run.bat                     bootstrap (venv, tools) then interactive menu
-run.bat --check             bootstrap status only
-run.bat play|scan|doctor    normal entrypoints
+run.bat                         bootstrap (venv, tools) then interactive menu
+run.bat --check                 bootstrap status only
+run.bat play|scan|fix|doctor    normal entrypoints
 .venv\Scripts\python.exe -m pytest                          # full suite
 .venv\Scripts\python.exe -m pytest tests/test_fit.py::test_session_claim_refuses_live_lock
 .venv\Scripts\python.exe -m pytest -m "not dsp"             # fast subset
@@ -75,7 +75,7 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
 - Console output is English, prefixed `[scan]`, `[play]`, `[search]`,
   `[doctor]`.
 - One session at a time is enforced by `data/session.lock` (pid-based, stale
-  locks are stolen). `play` and `scan` both claim it.
+  locks are stolen). `play`, `scan`, and `fix` all claim it.
 - A track has one authoritative map: `scan`/`fix` saving a map prunes other
   maps with the same track id (`prune_other_alignments`); `play` falls back to
   the newest by mtime (`load_newest_alignment`).

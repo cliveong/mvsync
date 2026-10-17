@@ -66,13 +66,15 @@ During playback (the console with `[play]` lines must stay focused):
 | `p` | play/pause Spotify |
 
 If the auto-picked MV is the wrong one (for example a remix instead of the
-original), you have three ways to force the right one:
+original), you have four ways to force the right one:
 
 - At the ready prompt during a scan, type the candidate number from the printed
   list (or paste a URL, or a bare video id) instead of pressing Enter.
 - `run.bat scan --pick 3` uses candidate 3 from the numbered list printed
   during the search.
 - `run.bat scan <url>` uses exactly the URL you give.
+- Menu option `4` (or `run.bat fix`) opens a picker window for the current
+  track, as described under "Picking a different MV" below.
 
 Either way the newest scan for that track wins: `play` and playlist
 transitions reuse it automatically. `play --pick N` picks candidate N for the
@@ -132,10 +134,11 @@ loopback device, and librosa. Run it whenever something looks off.
 ## Commands
 
 ```
-run.bat                 interactive menu (1 doctor, 2 scan, 3 play, 0 quit)
+run.bat                 interactive menu (1 doctor, 2 scan, 3 play, 4 fix, 0 quit)
 run.bat doctor          environment and device report
 run.bat scan [url]      scan the current track (auto-finds its MV)
 run.bat play [url]      play synced to Spotify (new tracks sync from the 2nd listen)
+run.bat fix             pick the right MV for the current track (opens a window)
 run.bat scan --pick N   scan with candidate N from the printed search list
 run.bat play --pick N   use candidate N for an unscanned track's MV
 run.bat --check         bootstrap status without changing anything
@@ -150,7 +153,7 @@ portable:
 data/cache/        downloaded MV video + audio per song (the bulk, up to ~100 MB per song at 4K)
 data/recordings/   loopback recordings used by scans and first listens (deleted once their map is saved)
 data/alignments/   the per-track sync maps (small JSON, the valuable part)
-data/session.lock  single-session marker while play or scan runs (stolen when stale)
+data/session.lock  single-session marker while play, scan, or fix runs (stolen when stale)
 ```
 
 Deleting `cache` is safe, it is re-downloaded on demand. Deleting `alignments`
@@ -180,8 +183,8 @@ still running, it waits for that fit before exiting so the map is not lost.
 - The loopback records everything the default output device plays, so keep
   notifications, games, and other apps quiet during a first listen or scan. A
   contaminated recording is rejected rather than saved as a bad map.
-- Run one session at a time: `play` and `scan` claim `data/session.lock`, so a
-  second `run.bat` refuses to start while one is live (a stale lock from a
+- Run one session at a time: `play`, `scan`, and `fix` claim `data/session.lock`,
+  so a second `run.bat` refuses to start while one is live (a stale lock from a
   crash is stolen automatically).
 - The video is muted by design; audio always comes from Spotify.
 - YouTube sometimes blocks direct streaming for mpv. That is why videos are

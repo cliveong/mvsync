@@ -1,8 +1,8 @@
 """Single-session guard: one mvsync session at a time per project folder.
 
-Both ``play`` and ``scan`` claim ``data/session.lock`` (holding the pid of the
-process) before touching Spotify, the loopback device, mpv, or the recordings.
-A stale lock left behind by a crashed session is stolen automatically.
+``play``, ``scan``, and ``fix`` claim ``data/session.lock`` (holding the pid of
+the process) before touching Spotify, the loopback device, mpv, or the
+recordings. A stale lock left behind by a crashed session is stolen automatically.
 """
 
 from __future__ import annotations
