@@ -121,18 +121,22 @@ class RadioRecording:
         self._started = False
         self._stopped = False
         self._finished = False
+        self._capture_failed = False
 
     @property
     def started(self) -> bool:
         return self._started
 
     def start(self, *, position_s: float, wall: float) -> None:
+        if self._capture_failed:
+            return
         try:
             self._recorder = make_recorder(
                 self._rec_path, root=self._root, mode=self._capture_mode
             )
         except RuntimeError as exc:
             self._recorder = None
+            self._capture_failed = True
             print(f"[play] cannot record this listen: {exc}")
             return
         self._started = True
@@ -151,7 +155,11 @@ class RadioRecording:
         self._watch.observe(state.position_s, state.updated_epoch_s, state.playing, now)
         if self._watch.dirty and not self._stopped:
             self._stopped = True
-            self._recorder.stop()
+            try:
+                self._recorder.stop()
+            except RuntimeError as exc:
+                self._capture_failed = True
+                print(f"[play] capture failed for {self._artist} - {self._title}: {exc}")
 
     def finish(self) -> None:
         if self._finished:
@@ -160,8 +168,17 @@ class RadioRecording:
         if not self._started:
             _discard(self._rec_path)
             return
-        self._recorder.stop()
         label = f"{self._artist} - {self._title}"
+        if self._capture_failed:
+            _discard(self._rec_path)
+            return
+        try:
+            self._recorder.stop()
+        except RuntimeError as exc:
+            self._capture_failed = True
+            print(f"[play] capture failed for {label}: {exc}; nothing saved")
+            _discard(self._rec_path)
+            return
         if self._watch.dirty:
             print(f"[play] discarded the recording of {label}: playback was interrupted")
             _discard(self._rec_path)

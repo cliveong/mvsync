@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from mvsync import config, paths, session
+from mvsync import paths, session
 from mvsync.align_store import (
     alignment_path,
     make_track_id,
@@ -164,7 +164,7 @@ def _record_and_fit(
             recorder.stop()
 
         if recorder.peak_db < SILENT_PEAK_DBFS:
-            if config.load_capture_mode(root) == "spotify":
+            if getattr(recorder, "backend", "device") == "spotify":
                 hint = "Spotify had no audio stream (app closed, or paused with nothing rendering)"
             else:
                 hint = "check that Spotify plays through the default output device"

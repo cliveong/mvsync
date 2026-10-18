@@ -281,7 +281,7 @@ VIDEO_ID = "ulr0muQKjk0"
 SCAN_URL = f"https://youtu.be/{VIDEO_ID}"
 
 
-def run_scan(monkeypatch, tmp_path, *, align, fetch=None):
+def run_scan(monkeypatch, tmp_path, *, align, fetch=None, peak_db=-30.0, backend=None):
     import builtins
 
     from mvsync import scan_runtime, session
@@ -292,11 +292,15 @@ def run_scan(monkeypatch, tmp_path, *, align, fetch=None):
     FakeRecorder.instances = []
     monkeypatch.setattr("mvsync.scan_runtime.time", clock)
     monkeypatch.setattr(scan_runtime, "SpotifyBridge", lambda: bridge)
-    monkeypatch.setattr(
-        scan_runtime,
-        "make_recorder",
-        lambda path, *, root=None, mode=None: FakeRecorder(path, clock),
-    )
+
+    def make_recorder(path, *, root=None, mode=None):
+        recorder = FakeRecorder(path, clock)
+        recorder.peak_db = peak_db
+        if backend is not None:
+            recorder.backend = backend
+        return recorder
+
+    monkeypatch.setattr(scan_runtime, "make_recorder", make_recorder)
     monkeypatch.setattr(scan_runtime, "wav_duration_s", lambda path: DURATION)
     monkeypatch.setattr(scan_runtime, "align_against_candidates", align)
     if fetch is not None:
@@ -354,6 +358,34 @@ def test_scan_deletes_recording_on_abort(tmp_path, monkeypatch):
 
     assert rc == 1
     assert not recording_path(tmp_path).exists()
+
+
+def test_scan_silence_hint_names_the_process_backend(tmp_path, monkeypatch, capsys):
+    from mvsync import config
+
+    config.set_capture_mode("device", tmp_path)
+
+    def align(*args, **kwargs):
+        raise AssertionError("a silent recording must not be fitted")
+
+    rc = run_scan(monkeypatch, tmp_path, align=align, peak_db=-90.0, backend="spotify")
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Spotify had no audio stream" in out
+    assert "default output device" not in out
+
+
+def test_scan_silence_hint_names_the_device_backend(tmp_path, monkeypatch, capsys):
+    def align(*args, **kwargs):
+        raise AssertionError("a silent recording must not be fitted")
+
+    rc = run_scan(monkeypatch, tmp_path, align=align, peak_db=-90.0, backend="device")
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "default output device" in out
+    assert "Spotify had no audio stream" not in out
 
 
 def test_scan_deletes_recording_after_saving_its_map(tmp_path, monkeypatch):

@@ -85,6 +85,8 @@ class PcmSink:
 class LoopbackRecorder:
     """Records the default output device to a WAV file on a worker thread."""
 
+    backend = "device"
+
     def __init__(
         self,
         path: Path,

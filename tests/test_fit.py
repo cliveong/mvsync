@@ -438,6 +438,22 @@ class SilentRecorder:
         pass
 
 
+class StopFailingRecorder:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.peak_db = -20.0
+        self.ready_epoch = time.time()
+        self.stop_calls = 0
+
+    def start(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_bytes(b"RIFF")
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        raise RuntimeError("capture thread failed")
+
+
 def test_first_listen_discards_when_the_recorder_cannot_start(tmp_path, monkeypatch):
     from mvsync import paths
     from mvsync import radio as radio_module
@@ -452,12 +468,49 @@ def test_first_listen_discards_when_the_recorder_cannot_start(tmp_path, monkeypa
         track_duration_s=100.0,
         root=tmp_path,
     )
-    monkeypatch.setattr(
-        radio_module,
-        "make_recorder",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no spotify process")),
-    )
+    calls = []
+
+    def fail(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise RuntimeError("no spotify process")
+
+    monkeypatch.setattr(radio_module, "make_recorder", fail)
     recording.start(position_s=0.0, wall=time.time())
+    assert recording.started is False
+    assert len(calls) == 1
+    recording.finish()
+    assert not rec_path.exists()
+
+
+def test_first_listen_logs_a_capture_start_failure_once(tmp_path, monkeypatch, capsys):
+    from mvsync import paths
+    from mvsync import radio as radio_module
+
+    rec_path = paths.ensure_dir(tmp_path / "rec") / "a.wav"
+    recording = radio_module.RadioRecording(
+        rec_path=rec_path,
+        candidates=[],
+        track_id="t",
+        artist="a",
+        title="t",
+        track_duration_s=100.0,
+        root=tmp_path,
+    )
+    calls = []
+
+    def fail(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise RuntimeError("no spotify process")
+
+    monkeypatch.setattr(radio_module, "make_recorder", fail)
+    recording.start(position_s=0.0, wall=time.time())
+    recording.start(position_s=0.0, wall=time.time())
+    recording.start(position_s=0.0, wall=time.time())
+    out = capsys.readouterr().out
+    assert recording.started is False
+    assert len(calls) == 1
+    assert out.count("cannot record this listen") == 1
+    assert "no spotify process" in out
     recording.finish()
     assert not rec_path.exists()
 
@@ -476,9 +529,70 @@ def test_first_listen_discards_a_silent_recording(tmp_path, monkeypatch):
         track_duration_s=100.0,
         root=tmp_path,
     )
-    monkeypatch.setattr(radio_module, "make_recorder", lambda *a, **k: SilentRecorder(rec_path))
+    calls = []
+
+    def make(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SilentRecorder(rec_path)
+
+    monkeypatch.setattr(radio_module, "make_recorder", make)
+    recording.start(position_s=0.0, wall=time.time())
+    assert recording.started is True
+    assert len(calls) == 1
+    recording.finish()
+    assert not rec_path.exists()
+
+
+def test_failed_capture_stop_does_not_escape_observe(tmp_path, monkeypatch, capsys):
+    from mvsync import paths
+    from mvsync import radio as radio_module
+
+    rec_path = paths.ensure_dir(tmp_path / "rec") / "a.wav"
+    recorder = StopFailingRecorder(rec_path)
+    recording = radio_module.RadioRecording(
+        rec_path=rec_path,
+        candidates=[],
+        track_id="t",
+        artist="a",
+        title="t",
+        track_duration_s=100.0,
+        root=tmp_path,
+    )
+    monkeypatch.setattr(radio_module, "make_recorder", lambda *a, **k: recorder)
+    recording.start(position_s=0.0, wall=time.time())
+    recording.observe(make_state(40.0, 100.0, True), 100.0)
+    recording.observe(make_state(5.0, 104.5, True), 104.5)
+    out = capsys.readouterr().out
+    assert recorder.stop_calls == 1
+    assert "capture thread failed" in out
+    recording.finish()
+    assert recorder.stop_calls == 1
+    assert not radio_module._pending_fits
+    assert not rec_path.exists()
+
+
+def test_failed_capture_stop_does_not_escape_finish(tmp_path, monkeypatch, capsys):
+    from mvsync import paths
+    from mvsync import radio as radio_module
+
+    rec_path = paths.ensure_dir(tmp_path / "rec") / "a.wav"
+    recorder = StopFailingRecorder(rec_path)
+    recording = radio_module.RadioRecording(
+        rec_path=rec_path,
+        candidates=[],
+        track_id="t",
+        artist="a",
+        title="t",
+        track_duration_s=100.0,
+        root=tmp_path,
+    )
+    monkeypatch.setattr(radio_module, "make_recorder", lambda *a, **k: recorder)
     recording.start(position_s=0.0, wall=time.time())
     recording.finish()
+    out = capsys.readouterr().out
+    assert recorder.stop_calls == 1
+    assert "capture thread failed" in out
+    assert not radio_module._pending_fits
     assert not rec_path.exists()
 
 

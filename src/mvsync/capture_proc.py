@@ -277,6 +277,8 @@ def _make_activation(pid: int) -> tuple[PROPVARIANT, AUDIOCLIENT_ACTIVATION_PARA
 class ProcessLoopbackRecorder:
     """Records one process tree to a WAV file on a worker thread."""
 
+    backend = "spotify"
+
     def __init__(
         self,
         path: Path,
