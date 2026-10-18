@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from mvsync import paths, session
@@ -51,16 +52,29 @@ def run_play(
     root: Path | None = None,
     poll_s: float = POLL_S,
     pick: int | None = None,
+    keys: Callable[[], str] | None = None,
 ) -> int:
+    """Follow the playlist, taking hotkeys from ``keys`` (the console by default)."""
     try:
-        return _run_play(url, root=root, poll_s=poll_s, pick=pick)
+        return _run_play(
+            url,
+            root=root,
+            poll_s=poll_s,
+            pick=pick,
+            keys=_read_key if keys is None else keys,
+        )
     except (RuntimeError, ValueError) as exc:
         print(f"[play] failed: {exc}")
         return 1
 
 
 def _run_play(
-    url: str | None, *, root: Path | None, poll_s: float, pick: int | None
+    url: str | None,
+    *,
+    root: Path | None,
+    poll_s: float,
+    pick: int | None,
+    keys: Callable[[], str],
 ) -> int:
     bridge = SpotifyBridge()
     state = bridge.current()
@@ -117,7 +131,16 @@ def _run_play(
                 state, mpv, store, root, pick=pick, url=url, announce=False
             )
         return _follow(
-            bridge, mpv, track_id, alignment, offset_s, root, poll_s, radio=radio, frozen=frozen
+            bridge,
+            mpv,
+            track_id,
+            alignment,
+            offset_s,
+            root,
+            poll_s,
+            radio=radio,
+            frozen=frozen,
+            keys=keys,
         )
     finally:
         mpv.stop()
@@ -135,9 +158,12 @@ def _follow(
     poll_s: float,
     radio: RadioRecording | None = None,
     frozen: bool = False,
+    keys: Callable[[], str] | None = None,
 ) -> int:
+    """Poll Spotify and drive mpv from the planner; ``keys`` supplies the hotkeys."""
     config = PlannerConfig()
     store = paths.alignments_dir(root)
+    keys = _read_key if keys is None else keys
     last_rate = 1.0
     offset = offset_s
     offset_dirty = False
@@ -147,7 +173,7 @@ def _follow(
     rough_prev_video: float | None = None
     try:
         while True:
-            key = _read_key()
+            key = keys()
             now = time.time()
             state = bridge.current()
             if state is None:

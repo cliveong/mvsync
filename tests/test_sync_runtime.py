@@ -352,3 +352,26 @@ def test_run_play_releases_the_session_lock(tmp_path, monkeypatch):
 
     assert sr.run_play(None, root=tmp_path, poll_s=0.01) == 0
     assert not (paths.data_dir(tmp_path) / "session.lock").exists()
+
+
+def test_play_reads_hotkeys_from_the_injected_source(tmp_path, monkeypatch):
+    from mvsync import sync_runtime as sr
+
+    pushed = ["q"]
+
+    def keys():
+        return pushed.pop(0) if pushed else ""
+
+    monkeypatch.setattr(sr, "MpvController", lambda root: FakeMpv())
+    # Two states: run_play reads one at line 80, _follow reads one at line 178, so the
+    # loop reaches the injected "q" instead of ending on a vanished session.
+    monkeypatch.setattr(sr, "SpotifyBridge", lambda: FakeBridge([make_state(), make_state()]))
+    # The real search raises instead of returning an empty list, which _start_track needs.
+    monkeypatch.setattr(
+        sr, "pick_mv_candidates", lambda *a, **k: [Candidate("vid1", "t", 180.0, "c")]
+    )
+    monkeypatch.setattr(sr, "fetch_video_mp4", boom_fetch)
+    monkeypatch.setattr(sr, "RadioRecording", StubRadio)
+
+    assert sr.run_play(None, root=tmp_path, poll_s=0.01, keys=keys) == 0
+    assert pushed == []
