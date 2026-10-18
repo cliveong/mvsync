@@ -33,12 +33,35 @@ class FakeText:
         pass
 
 
+class FakeWidget:
+    """Stand-in for a ttk widget: configure and pack record the call, never draw."""
+
+    def __init__(self):
+        self.options = {}
+
+    def configure(self, **kwargs):
+        self.options.update(kwargs)
+
+    def pack(self, **kwargs):
+        self.options["packed"] = True
+
+    def pack_forget(self):
+        self.options["packed"] = False
+
+
 class FakeEvent:
     """Only the two attributes MainWindow._on_key reads, so no Tk root is needed."""
 
     def __init__(self, keysym, widget=None):
         self.keysym = keysym
         self.widget = widget
+
+
+class FakeBridge:
+    """SMTC stand-in reporting no session, so refresh_track needs no player."""
+
+    def current(self):
+        return None
 
 
 class StandInWindow:
@@ -74,7 +97,7 @@ def pump_stand_in(**kwargs):
 
 
 def lock_stand_in(root):
-    """A stand-in whose lock probe and button update are the real MainWindow ones."""
+    """A stand-in whose lock probe and the handlers around it are the real ones."""
     from mvsync.gui import MainWindow
 
     window = StandInWindow()
@@ -83,9 +106,15 @@ def lock_stand_in(root):
     window._locked = False
     window._root_dir = root
     window._buttons = {action: FakeButton() for action in MAIN_ACTIONS}
+    window._track_label = FakeWidget()
+    window._status_label = FakeWidget()
+    window._hotkey_row = FakeWidget()
     window._log = partial(MainWindow._log, window)
     window._refresh_lock = partial(MainWindow._refresh_lock, window)
     window._update_buttons = partial(MainWindow._update_buttons, window)
+    window._set_status = partial(MainWindow._set_status, window)
+    window._set_hotkeys_visible = partial(MainWindow._set_hotkeys_visible, window)
+    window._cancel_pump = partial(MainWindow._cancel_pump, window)
     return window
 
 
@@ -351,3 +380,31 @@ def test_a_locked_window_starts_no_worker_and_says_why(tmp_path, monkeypatch):
     MainWindow._run(window, "play", lambda: started.append("ran") or 0)
     assert started == []
     assert "another session is already running (pid 424242)" in window._log_text.value
+
+
+def test_refreshing_the_track_re_reads_the_lock(tmp_path, monkeypatch):
+    from mvsync import gui, session
+
+    monkeypatch.setattr(gui, "SpotifyBridge", FakeBridge)
+    monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
+    window = lock_stand_in(tmp_path)
+
+    gui.MainWindow.refresh_track(window)
+    assert window._locked is True
+    assert all(button.state == "disabled" for button in window._buttons.values())
+
+
+def test_a_finished_worker_re_reads_the_lock(tmp_path, monkeypatch):
+    from mvsync import session
+    from mvsync.gui import MainWindow
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
+    window = lock_stand_in(tmp_path)
+    window._busy = True
+    window._action = "play"
+    window._sink.write("[play] done\n")
+
+    MainWindow._run_finished(window, "play", 0)
+    assert window._busy is False
+    assert window._locked is True
+    assert all(button.state == "disabled" for button in window._buttons.values())
