@@ -47,6 +47,10 @@ def alignments_dir(root: Path | None = None) -> Path:
     return data_dir(root) / "alignments"
 
 
+def logs_dir(root: Path | None = None) -> Path:
+    return data_dir(root) / "logs"
+
+
 def config_path(root: Path | None = None) -> Path:
     return data_dir(root) / "config.json"
 

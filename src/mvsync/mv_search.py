@@ -11,10 +11,11 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from mvsync import paths
+from mvsync import devlog, paths
 
 SEARCH_RESULTS = 8
 SEARCH_TIMEOUT_S = 60.0
@@ -95,6 +96,7 @@ def search_candidates(query: str, *, root: Path | None = None) -> list[Candidate
     ytdlp = paths.find_tool("yt-dlp", root)
     if ytdlp is None:
         raise RuntimeError("yt-dlp is required; run bootstrap.py first")
+    started = time.monotonic()
     try:
         proc = subprocess.run(
             [str(ytdlp), "--dump-json", "--flat-playlist", f"ytsearch{SEARCH_RESULTS}:{query}"],
@@ -105,11 +107,21 @@ def search_candidates(query: str, *, root: Path | None = None) -> list[Candidate
             timeout=SEARCH_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired as exc:
+        devlog.log("search_failed", query=query, reason="timeout")
         raise RuntimeError("the MV search timed out") from exc
+    elapsed_s = round(time.monotonic() - started, 2)
     if proc.returncode != 0:
         tail = " | ".join((proc.stderr or "").strip().splitlines()[-3:])
+        devlog.log("search_failed", query=query, rc=proc.returncode, elapsed_s=elapsed_s)
         raise RuntimeError(f"the MV search failed (rc={proc.returncode}): {tail}")
-    return parse_search_output(proc.stdout or "")
+    candidates = parse_search_output(proc.stdout or "")
+    devlog.log(
+        "search_done",
+        query=query,
+        elapsed_s=elapsed_s,
+        results=len(candidates),
+    )
+    return candidates
 
 
 def _has_word(text: str, word: str) -> bool:

@@ -80,12 +80,18 @@ def _doctor_capture_report() -> None:
 
 
 def doctor() -> int:
+    from mvsync import devlog
+
+    log_path = devlog.configure()
+    if log_path is not None:
+        print(f"[log] writing {log_path}")
     failures = 0
 
     def check(name: str, ok: bool, detail: str = "") -> None:
         nonlocal failures
         suffix = f" ({detail})" if detail else ""
         print(f"[doctor] {name}: {'ok' if ok else 'FAIL'}{suffix}")
+        devlog.log("doctor", name=name, ok=ok, detail=detail)
         if not ok:
             failures += 1
 

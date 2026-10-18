@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from mvsync import config
+from mvsync import config, devlog
 
 if TYPE_CHECKING:
     from mvsync.capture_proc import ProcessLoopbackRecorder
@@ -148,23 +148,31 @@ def make_recorder(
     """Pick process capture when usable, otherwise whole-device loopback."""
     chosen = mode if mode is not None else config.load_capture_mode(root)
     if chosen == "device":
+        devlog.log("capture_backend", mode=chosen, backend="device", reason="configured")
         return LoopbackRecorder(path)
     if chosen != "spotify":
         print(f"[capture] unknown capture mode {chosen!r}; using device loopback")
+        devlog.log("capture_backend", mode=chosen, backend="device", reason="unknown mode")
         return LoopbackRecorder(path)
     try:
         from mvsync import capture_proc
     except ImportError as exc:
         print(f"[capture] process capture unavailable ({exc}); using device loopback")
+        devlog.log(
+            "capture_backend", mode=chosen, backend="device", reason="process import failed"
+        )
         return LoopbackRecorder(path)
     supported = capture_proc.is_supported()
     pid = capture_proc.resolve_spotify_pid() if supported else None
     if select_backend(chosen, supported, pid) == "process":
+        devlog.log("capture_backend", mode=chosen, backend="process", pid=pid)
         return capture_proc.ProcessLoopbackRecorder(path, pid=pid)
     if not supported:
         print("[capture] process capture needs Windows 10 build 20348; using device loopback")
+        devlog.log("capture_backend", mode=chosen, backend="device", reason="unsupported os")
     else:
         print("[capture] Spotify audio session not found; using device loopback")
+        devlog.log("capture_backend", mode=chosen, backend="device", reason="no spotify session")
     return LoopbackRecorder(path)
 
 

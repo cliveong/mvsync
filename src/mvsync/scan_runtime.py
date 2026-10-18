@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from mvsync import paths, session
+from mvsync import devlog, paths, session
 from mvsync.align_store import (
     alignment_path,
     make_track_id,
@@ -53,6 +53,10 @@ class ScanResult:
 
 
 def run_scan(url: str | None, *, root: Path | None = None, pick: int | None = None) -> int:
+    log_path = devlog.configure(root)
+    if log_path is not None:
+        print(f"[log] writing {log_path}")
+    devlog.log("scan_start", url=url, pick=pick)
     try:
         session.claim(root)
         try:

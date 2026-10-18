@@ -13,14 +13,23 @@ DEFAULT_CAPTURE_MODE = "spotify"
 CAPTURE_MODES = ("spotify", "device")
 
 
-def load_capture_mode(root: Path | None = None) -> str:
-    """The persisted capture mode, or the default when the file is unusable."""
+def _load(root: Path | None) -> dict:
     try:
         data = json.loads(paths.config_path(root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return DEFAULT_CAPTURE_MODE
-    mode = data.get("capture_mode") if isinstance(data, dict) else None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_capture_mode(root: Path | None = None) -> str:
+    """The persisted capture mode, or the default when the file is unusable."""
+    mode = _load(root).get("capture_mode")
     return mode if mode in CAPTURE_MODES else DEFAULT_CAPTURE_MODE
+
+
+def load_dev_log(root: Path | None = None) -> bool:
+    """Whether the opt-in developer log is switched on in the config file."""
+    return _load(root).get("dev_log") is True
 
 
 def set_capture_mode(mode: str, root: Path | None = None) -> None:

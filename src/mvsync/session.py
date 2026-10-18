@@ -12,7 +12,7 @@ import ctypes
 import os
 from pathlib import Path
 
-from mvsync import paths
+from mvsync import devlog, paths
 
 LOCK_NAME = "session.lock"
 
@@ -71,9 +71,11 @@ def claim(root: Path | None = None) -> None:
     lock = _lock_path(root)
     pid = lock_holder(root)
     if pid:
+        devlog.log("lock_refused", pid=pid)
         raise RuntimeError(lock_refusal_message(pid))
     paths.ensure_dir(lock.parent)
     lock.write_text(str(os.getpid()), encoding="utf-8")
+    devlog.log("lock_claim", pid=os.getpid())
 
 
 def release(root: Path | None = None) -> None:
@@ -82,3 +84,4 @@ def release(root: Path | None = None) -> None:
     with contextlib.suppress(OSError):
         if lock.read_text(encoding="utf-8").strip() == str(os.getpid()):
             lock.unlink(missing_ok=True)
+            devlog.log("lock_release", pid=os.getpid())
