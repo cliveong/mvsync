@@ -94,6 +94,28 @@ def test_doctor_capture_probe_failure_does_not_raise(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "[doctor] capture:" in out
     assert "boom" in out
+    assert "backend=unknown" in out
+
+
+def test_doctor_reports_device_mode_even_with_a_spotify_session(capsys, monkeypatch):
+    _fake_doctor(monkeypatch, supported=True, pid=4242, mode="device")
+
+    cli.doctor()
+
+    out = capsys.readouterr().out
+    assert "mode=device" in out
+    assert "backend=device loopback" in out
+
+
+def test_doctor_uses_the_shared_backend_decision(capsys, monkeypatch):
+    _fake_doctor(monkeypatch, supported=True, pid=4242)
+
+    monkeypatch.setattr(capture, "select_backend", lambda mode, supported, pid: "device")
+
+    cli.doctor()
+
+    out = capsys.readouterr().out
+    assert "backend=device loopback" in out
 
 
 def test_doctor_reports_when_process_capture_is_not_installed(capsys, monkeypatch):

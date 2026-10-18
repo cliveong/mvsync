@@ -132,6 +132,13 @@ class LoopbackRecorder:
             sink.close()
 
 
+def select_backend(mode: str, supported: bool, pid: int | None) -> str:
+    """The backend both the recorder factory and doctor must agree on."""
+    if mode == "spotify" and supported and pid is not None:
+        return "process"
+    return "device"
+
+
 def make_recorder(
     path: Path,
     *,
@@ -150,14 +157,15 @@ def make_recorder(
     except ImportError as exc:
         print(f"[capture] process capture unavailable ({exc}); using device loopback")
         return LoopbackRecorder(path)
-    if not capture_proc.is_supported():
+    supported = capture_proc.is_supported()
+    pid = capture_proc.resolve_spotify_pid() if supported else None
+    if select_backend(chosen, supported, pid) == "process":
+        return capture_proc.ProcessLoopbackRecorder(path, pid=pid)
+    if not supported:
         print("[capture] process capture needs Windows 10 build 20348; using device loopback")
-        return LoopbackRecorder(path)
-    pid = capture_proc.resolve_spotify_pid()
-    if pid is None:
+    else:
         print("[capture] Spotify audio session not found; using device loopback")
-        return LoopbackRecorder(path)
-    return capture_proc.ProcessLoopbackRecorder(path, pid=pid)
+    return LoopbackRecorder(path)
 
 
 def __getattr__(name: str) -> object:

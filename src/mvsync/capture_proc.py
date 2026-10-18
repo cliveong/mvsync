@@ -338,6 +338,7 @@ class ProcessLoopbackRecorder:
         except BaseException as exc:
             self._error = exc
         finally:
+            close_error: BaseException | None = None
             try:
                 if self._client is not None:
                     with contextlib.suppress(Exception):
@@ -347,14 +348,18 @@ class ProcessLoopbackRecorder:
                     self._event_handle = None
             finally:
                 if sink is not None:
-                    with contextlib.suppress(Exception):
+                    try:
                         sink.close()
+                    except BaseException as exc:
+                        close_error = exc
                 self._client = None
                 self._capture = None
                 if initialized:
                     import comtypes
 
                     comtypes.CoUninitialize()
+            if close_error is not None and self._error is None:
+                self._error = RuntimeError(f"WAV finalization failed: {close_error!r}")
 
     def _activate(self):
         handler = _CompletionHandler()

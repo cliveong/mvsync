@@ -134,6 +134,7 @@ class RadioRecording:
             self._recorder = make_recorder(
                 self._rec_path, root=self._root, mode=self._capture_mode
             )
+            self._recorder.start()
         except RuntimeError as exc:
             self._recorder = None
             self._capture_failed = True
@@ -141,7 +142,6 @@ class RadioRecording:
             return
         self._started = True
         self._start_wall = wall
-        self._recorder.start()
         deadline = time.monotonic() + 3.0
         while self._recorder.ready_epoch is None and time.monotonic() < deadline:
             time.sleep(0.05)

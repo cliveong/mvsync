@@ -454,6 +454,19 @@ class StopFailingRecorder:
         raise RuntimeError("capture thread failed")
 
 
+class StartFailingRecorder:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.peak_db = 0.0
+        self.ready_epoch = None
+
+    def start(self) -> None:
+        raise RuntimeError("cannot create capture thread")
+
+    def stop(self) -> None:
+        raise AssertionError("a recorder that failed to start must not be stopped")
+
+
 def test_first_listen_discards_when_the_recorder_cannot_start(tmp_path, monkeypatch):
     from mvsync import paths
     from mvsync import radio as radio_module
@@ -478,6 +491,40 @@ def test_first_listen_discards_when_the_recorder_cannot_start(tmp_path, monkeypa
     recording.start(position_s=0.0, wall=time.time())
     assert recording.started is False
     assert len(calls) == 1
+    recording.finish()
+    assert not rec_path.exists()
+
+
+def test_first_listen_discards_when_starting_the_recorder_raises(
+    tmp_path, monkeypatch, capsys
+):
+    from mvsync import paths
+    from mvsync import radio as radio_module
+
+    rec_path = paths.ensure_dir(tmp_path / "rec") / "a.wav"
+    recording = radio_module.RadioRecording(
+        rec_path=rec_path,
+        candidates=[],
+        track_id="t",
+        artist="a",
+        title="t",
+        track_duration_s=100.0,
+        root=tmp_path,
+    )
+    calls = []
+
+    def make(*args, **kwargs):
+        calls.append((args, kwargs))
+        return StartFailingRecorder(rec_path)
+
+    monkeypatch.setattr(radio_module, "make_recorder", make)
+    recording.start(position_s=0.0, wall=time.time())
+    recording.start(position_s=0.0, wall=time.time())
+    out = capsys.readouterr().out
+    assert recording.started is False
+    assert len(calls) == 1
+    assert out.count("cannot record this listen") == 1
+    assert "cannot create capture thread" in out
     recording.finish()
     assert not rec_path.exists()
 

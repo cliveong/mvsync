@@ -178,9 +178,13 @@ portable:
 data/cache/        downloaded MV video + audio per song (the bulk, up to ~100 MB per song at 4K)
 data/recordings/   capture recordings used by scans and first listens (deleted once their map is saved)
 data/alignments/   the per-track sync maps (small JSON, the valuable part)
-data/config.json   capture mode switch: {"capture_mode": "spotify"} (default) or "device"
 data/session.lock  single-session marker while play, scan, or fix runs (stolen when stale)
 ```
+
+The capture mode is not a generated file: `data/config.json` is an optional
+override you create by hand. Without it the default is
+`{"capture_mode": "spotify"}`; write `{"capture_mode": "device"}` to force
+whole-mix loopback capture. A missing or unusable file keeps the default.
 
 The window only reads `session.lock`: it greys out its buttons when another live
 session holds it, and never writes or steals the file itself.
@@ -264,7 +268,7 @@ src/mvsync/    Python package (pure logic separated from IO adapters)
 tests/         pytest suite for the pure modules (DSP tests marked `dsp`)
 spikes/        M0 measurement scripts (SMTC cadence, mpv IPC, loopback, PCM)
 tools/         portable mpv, yt-dlp, and the project-local mpv config
-data/          generated: cache, recordings, alignments, config.json (see above)
+data/          generated: cache, recordings, alignments; config.json is an optional override (see above)
 ```
 
 ## Status

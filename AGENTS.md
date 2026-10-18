@@ -76,15 +76,17 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
 - Scans and first listens capture only the Spotify process tree on Windows build
   20348+ (`capture_proc`, backend `spotify`), falling back to the whole-device
   loopback (`capture`, backend `device`) when the OS is too old, the import
-  fails, or Spotify has no audio session. `ready_epoch` is stamped on the first
-  captured packet, not at activation, or `offset_s` shifts.
+  fails, or Spotify has no audio session. `capture.select_backend` is the single
+  decision `make_recorder` and doctor both use. `ready_epoch` is stamped on the
+  first captured packet, not at activation, or `offset_s` shifts.
 - `sys.coinit_flags = 0` must be the first executable statement of
   `capture_proc.py`, before any `comtypes` import: SoundCard may initialize MTA
   and comtypes would otherwise raise `RPC_E_CHANGED_MODE`.
 - Every path goes through `paths.py` (relative to the project root; the folder
-  must stay movable), including the capture mode in `data/config.json`
-  (`capture_mode`, `"spotify"` by default or `"device"`). `data/` is generated:
-  deleting `cache` is safe, deleting `alignments` loses sync maps.
+  must stay movable). The capture mode is an optional hand-written override in
+  `data/config.json` (`capture_mode`, `"spotify"` by default or `"device"`); the
+  app never writes it. `data/` is generated otherwise: deleting `cache` is safe,
+  deleting `alignments` loses sync maps.
 - Console output is English, prefixed `[scan]`, `[play]`, `[search]`,
   `[capture]`, `[doctor]`, and `[gui]` for the window's own lines (which the
   GUI's log pane shows beside the captured ones).

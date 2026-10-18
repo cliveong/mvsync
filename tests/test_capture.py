@@ -1,4 +1,5 @@
 import ctypes
+import sys
 import wave
 from pathlib import Path
 
@@ -107,6 +108,20 @@ def test_set_capture_mode_rejects_unknown_values(tmp_path):
         config.set_capture_mode("stereo", tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("mode", "supported", "pid", "expected"),
+    [
+        ("spotify", True, 4242, "process"),
+        ("spotify", False, 4242, "device"),
+        ("spotify", True, None, "device"),
+        ("device", True, 4242, "device"),
+        ("stereo", True, 4242, "device"),
+    ],
+)
+def test_select_backend_matches_the_recorder_factory(mode, supported, pid, expected):
+    assert capture.select_backend(mode, supported, pid) == expected
+
+
 def test_make_recorder_falls_back_when_spotify_is_missing(tmp_path, capsys, monkeypatch):
     from mvsync import capture, capture_proc
 
@@ -114,7 +129,41 @@ def test_make_recorder_falls_back_when_spotify_is_missing(tmp_path, capsys, monk
     monkeypatch.setattr(capture_proc, "resolve_spotify_pid", lambda: None)
     recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
     assert isinstance(recorder, capture.LoopbackRecorder)
-    assert "[capture]" in capsys.readouterr().out
+    assert "Spotify audio session not found; using device loopback" in capsys.readouterr().out
+
+
+def test_make_recorder_honors_device_mode(tmp_path):
+    recorder = capture.make_recorder(tmp_path / "a.wav", mode="device")
+    assert isinstance(recorder, capture.LoopbackRecorder)
+
+
+def test_make_recorder_falls_back_when_process_capture_is_unimportable(
+    tmp_path, capsys, monkeypatch
+):
+    import mvsync
+
+    monkeypatch.delattr(mvsync, "capture_proc", raising=False)
+    monkeypatch.setitem(sys.modules, "mvsync.capture_proc", None)
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
+    assert isinstance(recorder, capture.LoopbackRecorder)
+    assert "process capture unavailable" in capsys.readouterr().out
+
+
+def test_make_recorder_falls_back_when_process_capture_is_unsupported(
+    tmp_path, capsys, monkeypatch
+):
+    from mvsync import capture_proc
+
+    monkeypatch.setattr(capture_proc, "is_supported", lambda: False)
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
+    assert isinstance(recorder, capture.LoopbackRecorder)
+    assert "needs Windows 10 build 20348" in capsys.readouterr().out
+
+
+def test_make_recorder_falls_back_on_an_unknown_mode(tmp_path, capsys):
+    recorder = capture.make_recorder(tmp_path / "a.wav", mode="stereo")
+    assert isinstance(recorder, capture.LoopbackRecorder)
+    assert "unknown capture mode 'stereo'; using device loopback" in capsys.readouterr().out
 
 
 def test_make_recorder_uses_the_process_backend(tmp_path, monkeypatch):
@@ -125,3 +174,53 @@ def test_make_recorder_uses_the_process_backend(tmp_path, monkeypatch):
     recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
     assert isinstance(recorder, capture.ProcessLoopbackRecorder)
     assert recorder._pid == 4242
+
+
+def test_process_recorder_surfaces_a_wav_close_failure_after_uninitializing(
+    tmp_path, monkeypatch
+):
+    import comtypes
+
+    from mvsync import capture_proc
+
+    class FakeSink:
+        def __init__(self, path, **kwargs):
+            self.path = path
+
+        def open(self) -> None:
+            pass
+
+        def close(self) -> None:
+            raise OSError("disk full")
+
+    class FakeClient:
+        def GetService(self, iid):
+            return self
+
+        def QueryInterface(self, iface):
+            return self
+
+        def SetEventHandle(self, handle) -> None:
+            pass
+
+        def Start(self) -> None:
+            pass
+
+        def Stop(self) -> None:
+            pass
+
+    recorder = capture_proc.ProcessLoopbackRecorder(tmp_path / "a.wav", pid=4242)
+    recorder._stop.set()
+    calls: list[str] = []
+    monkeypatch.setattr(capture_proc, "PcmSink", FakeSink)
+    monkeypatch.setattr(recorder, "_activate", lambda: FakeClient())
+    monkeypatch.setattr(capture_proc._kernel32, "CreateEventW", lambda *args: 123)
+    monkeypatch.setattr(capture_proc._kernel32, "CloseHandle", lambda handle: 1)
+    monkeypatch.setattr(comtypes, "CoInitializeEx", lambda flags: calls.append("init"))
+    monkeypatch.setattr(comtypes, "CoUninitialize", lambda: calls.append("uninit"))
+
+    recorder._run()
+
+    assert calls == ["init", "uninit"]
+    with pytest.raises(RuntimeError, match="WAV finalization failed"):
+        recorder.stop()

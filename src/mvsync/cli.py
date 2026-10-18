@@ -42,7 +42,7 @@ def _doctor_capture_report() -> None:
     except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
         print(
             f"[doctor] capture: mode={mode}, process loopback check failed ({exc}), "
-            "backend=device loopback"
+            "backend=unknown"
         )
         return
 
@@ -51,7 +51,7 @@ def _doctor_capture_report() -> None:
     except Exception as exc:  # noqa: BLE001
         print(
             f"[doctor] capture: mode={mode}, process loopback check failed ({exc}), "
-            "backend=device loopback"
+            "backend=unknown"
         )
         return
 
@@ -64,11 +64,15 @@ def _doctor_capture_report() -> None:
     if pid is not None:
         pid_detail = f"pid={pid}"
 
-    backend = (
-        "process loopback"
-        if mode == "spotify" and supported and pid is not None
-        else "device loopback"
-    )
+    try:
+        from mvsync.capture import select_backend
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        print(
+            f"[doctor] capture: mode={mode}, backend check failed ({exc}), backend=unknown"
+        )
+        return
+    decision = select_backend(mode, supported, pid)
+    backend = "process loopback" if decision == "process" else "device loopback"
     print(
         f"[doctor] capture: mode={mode}, process loopback supported={supported}, "
         f"spotify {pid_detail}, backend={backend}"
