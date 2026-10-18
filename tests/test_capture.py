@@ -1,4 +1,6 @@
+import ctypes
 import wave
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -53,3 +55,26 @@ def test_sink_close_is_idempotent(tmp_path):
     sink.open()
     sink.close()
     sink.close()
+
+
+def test_is_supported_needs_build_20348():
+    from mvsync import capture_proc
+
+    assert capture_proc.is_supported(19045) is False
+    assert capture_proc.is_supported(20348) is True
+    assert capture_proc.is_supported(26200) is True
+
+
+def test_process_structs_have_the_win32_layout():
+    from mvsync import capture_proc
+
+    assert ctypes.sizeof(capture_proc.WAVEFORMATEX) == 18
+    assert ctypes.sizeof(capture_proc.AUDIOCLIENT_ACTIVATION_PARAMS) == 12
+    assert ctypes.sizeof(capture_proc.PROPVARIANT) == 16
+
+
+def test_process_recorder_keeps_its_pid():
+    from mvsync import capture_proc
+
+    recorder = capture_proc.ProcessLoopbackRecorder(Path("a.wav"), pid=4242)
+    assert recorder._pid == 4242

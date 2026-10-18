@@ -1,5 +1,7 @@
+comtypes>=1.2.0
 librosa>=0.10.2
 numpy>=1.26
+pycaw>=20240210
 python-mpv-jsonipc>=1.2.3
 scipy>=1.12
 soundcard>=0.4.2
