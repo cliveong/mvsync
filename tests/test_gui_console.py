@@ -108,29 +108,27 @@ def test_log_sink_loses_no_writes_under_concurrency():
 
     total = 10_000
     sink = LogSink(max_lines=total + 10)
+    done = threading.Event()
 
     def writer() -> None:
-        for index in range(total):
-            sink.write(f"{index}\n")
+        try:
+            for index in range(total):
+                sink.write(f"{index}\n")
+        finally:
+            done.set()
 
     drained: list[str] = []
-    started = threading.Event()
 
     def reader() -> None:
-        started.wait()
-        for _ in range(total * 20):
-            lines = sink.drain()
-            if lines:
-                drained.extend(lines)
-            if len(drained) >= total:
-                break
+        while not done.is_set():
+            drained.extend(sink.drain())
 
     writer_thread = threading.Thread(target=writer)
     reader_thread = threading.Thread(target=reader)
-    writer_thread.start()
-    started.set()
     reader_thread.start()
+    writer_thread.start()
     writer_thread.join()
     reader_thread.join()
+    drained.extend(sink.drain())
 
     assert len(drained) == total
