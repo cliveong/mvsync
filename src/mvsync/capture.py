@@ -36,6 +36,46 @@ def rms_db(data: np.ndarray) -> float:
     return float(20.0 * np.log10(rms)) if rms > 0 else float("-inf")
 
 
+class PcmSink:
+    """Writes float32 blocks to a 16-bit PCM WAV file and tracks their peak."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        samplerate: int = SAMPLE_RATE,
+        channels: int = CHANNELS,
+    ) -> None:
+        self.path = path
+        self.samplerate = samplerate
+        self.channels = channels
+        self.peak_db = float("-inf")
+        self.frames_written = 0
+        self._wav: wave.Wave_write | None = None
+
+    def open(self) -> None:
+        """Open the WAV file and write its header."""
+        self._wav = wave.open(str(self.path), "wb")  # noqa: SIM115
+        self._wav.setnchannels(self.channels)
+        self._wav.setsampwidth(2)
+        self._wav.setframerate(self.samplerate)
+
+    def write(self, data: np.ndarray) -> None:
+        """Append one float32 ``(frames, channels)`` block in [-1, 1]."""
+        if self._wav is None:
+            raise RuntimeError("PcmSink is not open")
+        self.peak_db = max(self.peak_db, rms_db(data))
+        pcm = (np.clip(data, -1.0, 1.0) * 32767).astype("<i2")
+        self._wav.writeframes(pcm.tobytes())
+        self.frames_written += int(data.shape[0])
+
+    def close(self) -> None:
+        """Close the WAV file; safe to call more than once."""
+        if self._wav is not None:
+            self._wav.close()
+            self._wav = None
+
+
 class LoopbackRecorder:
     """Records the default output device to a WAV file on a worker thread."""
 
@@ -68,10 +108,9 @@ class LoopbackRecorder:
 
     def _run(self) -> None:
         mic = default_loopback()
-        with wave.open(str(self.path), "wb") as wav:
-            wav.setnchannels(self.channels)
-            wav.setsampwidth(2)
-            wav.setframerate(self.samplerate)
+        sink = PcmSink(self.path, samplerate=self.samplerate, channels=self.channels)
+        sink.open()
+        try:
             with mic.recorder(
                 samplerate=self.samplerate,
                 channels=self.channels,
@@ -79,7 +118,7 @@ class LoopbackRecorder:
             ) as recorder:
                 self.ready_epoch = time.time()
                 while not self._stop.is_set():
-                    data = recorder.record(numframes=self.block_frames)
-                    self.peak_db = max(self.peak_db, rms_db(data))
-                    pcm = (np.clip(data, -1.0, 1.0) * 32767).astype("<i2")
-                    wav.writeframes(pcm.tobytes())
+                    sink.write(recorder.record(numframes=self.block_frames))
+                    self.peak_db = sink.peak_db
+        finally:
+            sink.close()
