@@ -31,13 +31,13 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
 
 ## Architecture
 
-- Windows-only by design (winsdk, soundcard loopback, msvcrt, named-pipe mpv
-  IPC). Do not add cross-platform shims.
+- Windows-only by design (winsdk, soundcard loopback, comtypes/pycaw process
+  loopback, msvcrt, named-pipe mpv IPC). Do not add cross-platform shims.
 - Pure logic, unit-testable with synthetic data: `clock`, `align`, `match`,
   `timeline`, `align_store`, `sync_planner`, `mv_search` scoring.
-- IO adapters and runtimes: `spotify_smtc`, `capture`, `mpv_ctl`, `mv_audio`,
-  `sync_runtime`, `scan_runtime`, `radio`, `session`, `paths`, `gui`,
-  `gui_console`.
+- IO adapters and runtimes: `spotify_smtc`, `capture`, `capture_proc`, `config`,
+  `mpv_ctl`, `mv_audio`, `sync_runtime`, `scan_runtime`, `radio`, `session`,
+  `paths`, `gui`, `gui_console`.
 
 ## Invariants (each one cost a debugging session to learn)
 
@@ -73,12 +73,21 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
   discarded.
 - A first-listen recording is trusted only when wall time and captured audio
   agree (`MAX_CAPTURE_LOSS_S`) and `RadioWatch` saw no pause over 2 s or seek.
+- Scans and first listens capture only the Spotify process tree on Windows build
+  20348+ (`capture_proc`, backend `spotify`), falling back to the whole-device
+  loopback (`capture`, backend `device`) when the OS is too old, the import
+  fails, or Spotify has no audio session. `ready_epoch` is stamped on the first
+  captured packet, not at activation, or `offset_s` shifts.
+- `sys.coinit_flags = 0` must be the first executable statement of
+  `capture_proc.py`, before any `comtypes` import: SoundCard may initialize MTA
+  and comtypes would otherwise raise `RPC_E_CHANGED_MODE`.
 - Every path goes through `paths.py` (relative to the project root; the folder
-  must stay movable). `data/` is generated: deleting `cache` is safe, deleting
-  `alignments` loses sync maps.
+  must stay movable), including the capture mode in `data/config.json`
+  (`capture_mode`, `"spotify"` by default or `"device"`). `data/` is generated:
+  deleting `cache` is safe, deleting `alignments` loses sync maps.
 - Console output is English, prefixed `[scan]`, `[play]`, `[search]`,
-  `[doctor]`, and `[gui]` for the window's own lines (which the GUI's log pane
-  shows beside the captured ones).
+  `[capture]`, `[doctor]`, and `[gui]` for the window's own lines (which the
+  GUI's log pane shows beside the captured ones).
 - One session at a time is enforced by `data/session.lock` (pid-based, stale
   locks are stolen). `play`, `scan`, and `fix` all claim it. `session.claim` is
   the only writer of that file, and `session.lock_holder` is the strictly

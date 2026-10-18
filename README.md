@@ -19,6 +19,8 @@ no account credentials anywhere in this project).
 - Spotify Premium (ad-free) is assumed: an ad would be treated as an unknown track.
 - Python 3.12 available through the `py` launcher.
 - ffmpeg on `PATH` or in `tools/ffmpeg/bin` (used for audio decoding).
+- No extra setup for the default Spotify-only capture: `comtypes`, `pycaw`, and
+  `psutil` are pure-Python dependencies installed by the bootstrap.
 - The video plays muted in mpv; all audio comes from Spotify.
 
 ## Quick start
@@ -54,7 +56,7 @@ That is it. Pressing `Play` looks up the track that is currently playing:
 - Playlist running: when Spotify moves to the next track, the video switches
   with it. A scanned track swaps to its own synced video. A new track plays its
   found MV roughly in sync (no interruption to your listening) while the
-  loopback records it; the alignment is computed right after the song ends, so
+  capture records it; the alignment is computed right after the song ends, so
   the next time you hear that track it plays fully synced.
 
 During playback the mpv video window holds the keyboard focus, so the key
@@ -143,8 +145,10 @@ candidates, any skipped MV sections, and the final save.
 ### Doctor
 
 The `Doctor` button (or `run.bat doctor`) checks Python, the portable tools, the
-Spotify session, the loopback device, and librosa. Run it whenever something
-looks off.
+Spotify session, the capture backend, the loopback device, and librosa. Its
+`[doctor] capture:` line prints the configured mode, whether process loopback is
+supported, the Spotify PID (or that there is no audio session), and the
+effective backend. Run it whenever something looks off.
 
 ## Command line
 
@@ -172,8 +176,9 @@ portable:
 
 ```
 data/cache/        downloaded MV video + audio per song (the bulk, up to ~100 MB per song at 4K)
-data/recordings/   loopback recordings used by scans and first listens (deleted once their map is saved)
+data/recordings/   capture recordings used by scans and first listens (deleted once their map is saved)
 data/alignments/   the per-track sync maps (small JSON, the valuable part)
+data/config.json   capture mode switch: {"capture_mode": "spotify"} (default) or "device"
 data/session.lock  single-session marker while play, scan, or fix runs (stolen when stale)
 ```
 
@@ -199,14 +204,24 @@ still running, it waits for that fit before exiting so the map is not lost.
 
 ## Notes and limitations
 
-- Only the Spotify desktop app works, and it must play through the default
-  output device (the loopback records that device). Switching playback to
-  another device with Spotify Connect, or changing the default output device
-  mid-song, voids a first listen in progress (the map is just learned again
-  next time).
-- The loopback records everything the default output device plays, so keep
-  notifications, games, and other apps quiet during a first listen or scan. A
-  contaminated recording is rejected rather than saved as a bad map.
+- Only the Spotify desktop app works. In the default `"spotify"` capture mode
+  the process loopback follows the Spotify process, so the output device does
+  not matter and switching devices with Spotify Connect does not affect
+  capture. With `capture_mode` set to `"device"`, Spotify must play through the
+  default output device; switching playback to another device with Spotify
+  Connect, or changing the default output device mid-song, voids a first listen
+  in progress (the map is just learned again next time).
+- Scans and first listens record only Spotify by default (`"spotify"` process
+  capture), so notifications, games, and other apps stay out. This needs
+  Windows 10 build 20348 or later and the pure-Python `comtypes`/`pycaw`
+  dependencies installed by the bootstrap; on older Windows, when the import
+  fails, or when Spotify has no audio session, capture falls back automatically
+  to the whole-device loopback. Set `{"capture_mode": "device"}` in
+  `data/config.json` to force whole-mix capture (the default is
+  `{"capture_mode": "spotify"}`); that mode records everything the default
+  output device plays, so keep other apps quiet during a first listen or scan.
+  A contaminated or silent recording is rejected rather than saved as a bad
+  map.
 - Run one session at a time: `play`, `scan`, and `fix` claim `data/session.lock`,
   so a second `run.bat` refuses to start while one is live (a stale lock from a
   crash is stolen automatically), and the window's buttons stay greyed out.
@@ -249,7 +264,7 @@ src/mvsync/    Python package (pure logic separated from IO adapters)
 tests/         pytest suite for the pure modules (DSP tests marked `dsp`)
 spikes/        M0 measurement scripts (SMTC cadence, mpv IPC, loopback, PCM)
 tools/         portable mpv, yt-dlp, and the project-local mpv config
-data/          generated: cache, recordings, alignments (see above)
+data/          generated: cache, recordings, alignments, config.json (see above)
 ```
 
 ## Status
