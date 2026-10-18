@@ -81,10 +81,11 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
   shows beside the captured ones).
 - One session at a time is enforced by `data/session.lock` (pid-based, stale
   locks are stolen). `play`, `scan`, and `fix` all claim it. `session.claim` is
-  the only writer of that file, and `session.is_locked` is a strictly read-only
-  probe the GUI uses to grey out its buttons: it must never steal the lock, and
-  it excludes our own pid (`lock_holder`) so the window does not mistake its own
-  worker for an external session.
+  the only writer of that file, and `session.lock_holder` is the strictly
+  read-only probe the GUI calls to grey out its buttons: it must never steal the
+  lock, and it excludes our own pid so the window does not mistake its own
+  worker for an external session. `session.is_locked` is only its boolean
+  wrapper, for callers that do not need the pid.
 - The play loop takes its hotkeys from an injected callable (`run_play(keys=...)`,
   `KeySource.poll` from the window, `_read_key` from the console) and only reads
   them once `_follow` is running, so keys pushed while a video is still

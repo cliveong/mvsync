@@ -363,9 +363,9 @@ def test_play_reads_hotkeys_from_the_injected_source(tmp_path, monkeypatch):
         return pushed.pop(0) if pushed else ""
 
     monkeypatch.setattr(sr, "MpvController", lambda root: FakeMpv())
-    # Two states: run_play reads one at line 80, _follow reads one at line 178, so the
-    # loop reaches the injected "q" instead of ending on a vanished session.
-    monkeypatch.setattr(sr, "SpotifyBridge", lambda: FakeBridge([make_state(), make_state()]))
+    # One state is enough: _follow polls keys() at the top of the loop, before it reads
+    # the session, so the injected "q" ends the run before the vanished session does.
+    monkeypatch.setattr(sr, "SpotifyBridge", lambda: FakeBridge([make_state()]))
     # The real search raises instead of returning an empty list, which _start_track needs.
     monkeypatch.setattr(
         sr, "pick_mv_candidates", lambda *a, **k: [Candidate("vid1", "t", 180.0, "c")]

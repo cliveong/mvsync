@@ -34,6 +34,11 @@ def enabled_actions(busy: bool, locked: bool) -> tuple[str, ...]:
     return () if busy or locked else MAIN_ACTIONS
 
 
+def lock_status(pid: int) -> str:
+    """The status line for a window another session has locked out of play."""
+    return f"locked by another session (pid {pid}); Refresh track re-checks"
+
+
 def append_log(widget: tk.Text, lines: list[str]) -> None:
     """Append whole lines to a read-only text pane and scroll to the newest."""
     widget.configure(state="normal")
@@ -70,6 +75,18 @@ def candidate_row_values(
     )
 
 
+def close_question(action: str | None) -> str:
+    """What closing really does: only a running play is stopped, the rest is abandoned."""
+    if action == "play":
+        return "Play is running; closing now stops it. Close anyway?"
+    if action == "fix":
+        return (
+            "Fix MV is running; closing this window leaves its picker and its "
+            "child process running. Close anyway?"
+        )
+    return f"A {action or 'session'} is running; closing now abandons it part-way. Close anyway?"
+
+
 class MainWindow(tk.Tk):
     """Everyday window: play, scan, fix, and doctor over one live log pane."""
 
@@ -82,6 +99,7 @@ class MainWindow(tk.Tk):
         self._keys = KeySource()
         self._busy = False
         self._locked = False
+        self._lock_pid = 0
         self._closing = False
         self._action: str | None = None
         self._sink: LogSink | None = None
@@ -164,8 +182,19 @@ class MainWindow(tk.Tk):
         if pid and not self._locked:
             self._log(f"[gui] {session.lock_refusal_message(pid)}")
         self._locked = pid != 0
+        self._lock_pid = pid
         self._update_buttons()
+        self._update_status()
         return self._locked
+
+    def _update_status(self) -> None:
+        """One owner for the status line: what runs, what blocks it, or idle."""
+        if self._busy:
+            self._set_status(f"{self._action} running...")
+        elif self._locked:
+            self._set_status(lock_status(self._lock_pid))
+        else:
+            self._set_status("idle")
 
     def _update_buttons(self) -> None:
         enabled = enabled_actions(self._busy, self._locked)
@@ -225,14 +254,17 @@ class MainWindow(tk.Tk):
             self._log("[gui] another operation is already running")
             return
         if self._refresh_lock():
-            self._log(f"[gui] {action} refused: another session is already running")
+            self._log(
+                f"[gui] {action} refused: {session.lock_refusal_message(self._lock_pid)}; "
+                "press Refresh track to re-check"
+            )
             return
         self._busy = True
         self._action = action
         self._sink = LogSink()
         sink = self._sink
         self._update_buttons()
-        self._set_status(f"{action} running...")
+        self._update_status()
         if action == "play":
             self._set_hotkeys_visible(True)
         self._pump_after = self.after(LOG_PUMP_MS, self._pump)
@@ -277,7 +309,6 @@ class MainWindow(tk.Tk):
         self._action = None
         self._set_hotkeys_visible(False)
         self._refresh_lock()
-        self._set_status("idle")
         if action == "scan":
             self.refresh_track()
 
@@ -345,10 +376,7 @@ class MainWindow(tk.Tk):
         return subprocess.Popen([sys.executable, *FIX_COMMAND]).wait()
 
     def _on_close(self) -> None:
-        if self._busy and not messagebox.askyesno(
-            "mvsync",
-            f"A {self._action or 'session'} is running; closing now stops it. Close anyway?",
-        ):
+        if self._busy and not messagebox.askyesno("mvsync", close_question(self._action)):
             return
         self._closing = True
         self._cancel_pump()

@@ -137,11 +137,6 @@ def test_log_sink_loses_no_writes_under_concurrency():
             rendezvous()
             return InterleavingText(str.__add__(self, other))
 
-        def rpartition(self, sep: str) -> tuple["InterleavingText", str, "InterleavingText"]:
-            """Keep the type (and the rendezvous) alive across drain()."""
-            head, separator, tail = str.rpartition(self, sep)
-            return InterleavingText(head), separator, InterleavingText(tail)
-
     total = 24
     per_thread = total // 2
     sink = LogSink(max_lines=total + 10)

@@ -2,11 +2,12 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from functools import partial
 
 import pytest
 
-from mvsync.gui import MAIN_ACTIONS
+from mvsync.gui import MAIN_ACTIONS, lock_status
 from mvsync.gui_console import KeySource, LogSink
 
 
@@ -82,13 +83,35 @@ class StandInWindow:
         self._state = state
         self._pump_after = None
         self.scheduled = []
+        self.cancelled = []
 
-    def after(self, delay_ms, callback):
-        self.scheduled.append((delay_ms, callback))
-        return f"after#{len(self.scheduled)}"
+    def after(self, delay_ms, callback, *args):
+        """Record every call with its extra args, the way Tk's after passes them on."""
+        handle = f"after#{len(self.scheduled) + 1}"
+        self.scheduled.append((delay_ms, callback, *args))
+        return handle
 
     def after_cancel(self, handle):
-        self.scheduled.remove(handle)
+        self.cancelled.append(handle)
+
+
+class ThreadCheckedUrlVar:
+    """Stand-in for tk.StringVar: get() refuses to run off the thread that made it.
+
+    Tk raises the same RuntimeError from a StringVar touched off the main thread,
+    so a test can prove the read happened on the Tk thread without a Tk root.
+    """
+
+    def __init__(self, value):
+        self.owner = threading.current_thread()
+        self.reads = []
+        self.value = value
+
+    def get(self):
+        self.reads.append(threading.current_thread())
+        if threading.current_thread() is not self.owner:
+            raise RuntimeError("main thread is not in main loop")
+        return self.value
 
 
 def pump_stand_in(**kwargs):
@@ -108,6 +131,7 @@ def lock_stand_in(root):
     window._busy = False
     window._action = None
     window._locked = False
+    window._lock_pid = 0
     window._root_dir = root
     window._buttons = {action: FakeButton() for action in MAIN_ACTIONS}
     window._track_label = FakeWidget()
@@ -117,9 +141,29 @@ def lock_stand_in(root):
     window._refresh_lock = partial(MainWindow._refresh_lock, window)
     window._update_buttons = partial(MainWindow._update_buttons, window)
     window._set_status = partial(MainWindow._set_status, window)
+    window._update_status = partial(MainWindow._update_status, window)
     window._set_hotkeys_visible = partial(MainWindow._set_hotkeys_visible, window)
     window._cancel_pump = partial(MainWindow._cancel_pump, window)
+    window._run_finished = partial(MainWindow._run_finished, window)
+    window._pump = partial(MainWindow._pump, window)
+    window._worker = None
     return window
+
+
+def run_stand_in(root):
+    """A stand-in whose _run is the real one, so a worker thread actually starts."""
+    from mvsync.gui import MainWindow
+
+    window = lock_stand_in(root)
+    window._run = partial(MainWindow._run, window)
+    return window
+
+
+def join_worker(window, timeout=5.0):
+    """Wait for the worker _run started, failing loudly if it is still running."""
+    assert window._worker is not None, "no worker thread was started"
+    window._worker.join(timeout=timeout)
+    assert not window._worker.is_alive(), "the worker thread outlived its join timeout"
 
 
 def test_gui_module_exposes_run_fixer():
@@ -181,6 +225,19 @@ def test_the_menu_command_still_opens_the_console_menu(monkeypatch):
     monkeypatch.setattr(gui, "run_gui", lambda *a, **k: pytest.fail("gui must not open"))
     monkeypatch.setattr(cli, "menu", lambda: 0)
     assert cli.main(["menu"]) == 0
+
+
+def _interrupt(*args, **kwargs):
+    raise KeyboardInterrupt
+
+
+@pytest.mark.parametrize("argv", [[], ["gui"]])
+def test_ctrl_c_in_the_window_returns_130_not_a_traceback(argv, monkeypatch):
+    """Both ways into the window sit inside the same try, so Ctrl+C never escapes."""
+    from mvsync import cli, gui
+
+    monkeypatch.setattr(gui, "run_gui", _interrupt)
+    assert cli.main(argv) == 130
 
 
 # cli.py's docstring promises the heavy imports stay lazy so --help stays fast. The
@@ -471,6 +528,62 @@ def test_a_locked_window_starts_no_worker_and_says_why(tmp_path, monkeypatch):
     assert "another session is already running (pid 424242)" in window._log_text.value
 
 
+def test_a_refusal_points_at_refresh_track_as_the_way_back(tmp_path, monkeypatch):
+    """The lock is only re-read on demand, so the user needs to be told what re-reads it."""
+    from mvsync import session
+    from mvsync.gui import MainWindow
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
+    window = lock_stand_in(tmp_path)
+
+    MainWindow._run(window, "play", lambda: 0)
+    assert "Refresh track" in window._log_text.value
+    assert window._status_label.options["text"] == lock_status(424242)
+    assert window._busy is False
+
+
+def test_the_status_line_says_a_session_holds_the_lock(tmp_path, monkeypatch):
+    from mvsync import session
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
+    window = lock_stand_in(tmp_path)
+
+    window._refresh_lock()
+    assert window._status_label.options["text"] == lock_status(424242)
+
+
+def test_the_status_line_returns_to_idle_when_the_other_session_ends(tmp_path, monkeypatch):
+    from mvsync import session
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
+    window = lock_stand_in(tmp_path)
+    window._refresh_lock()
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    window._refresh_lock()
+    assert window._status_label.options["text"] == "idle"
+
+
+def test_the_status_line_names_the_operation_that_is_running(tmp_path, monkeypatch):
+    from mvsync import session
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
+    window = lock_stand_in(tmp_path)
+    window._busy = True
+    window._action = "play"
+
+    window._refresh_lock()
+    assert window._status_label.options["text"] == "play running..."
+
+
+def test_lock_status_names_the_pid_and_the_way_out():
+    from mvsync.gui import lock_status
+
+    text = lock_status(424242)
+    assert "424242" in text
+    assert "Refresh track" in text
+
+
 def test_refreshing_the_track_re_reads_the_lock(tmp_path, monkeypatch):
     from mvsync import gui, session
 
@@ -497,3 +610,196 @@ def test_a_finished_worker_re_reads_the_lock(tmp_path, monkeypatch):
     assert window._busy is False
     assert window._locked is True
     assert all(button.state == "disabled" for button in window._buttons.values())
+
+
+# The success path of _run: the worker thread, the stdout redirect into the sink,
+# the log pump, and the after() that hands the result to _run_finished. It used to
+# have no coverage at all, and every IMPORTANT finding in this file was found by
+# hand rather than by the suite, so the net matters.
+def test_run_starts_a_worker_and_captures_its_stdout(tmp_path, monkeypatch):
+    from mvsync import session
+    from mvsync.gui import LOG_PUMP_MS, MainWindow, drain_lines
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    window = run_stand_in(tmp_path)
+
+    def work():
+        print("[play] downloading")
+        return 0
+
+    MainWindow._run(window, "play", work)
+    assert window._busy is True
+    assert window._status_label.options["text"] == "play running..."
+    assert window._hotkey_row.options["packed"] is True
+    assert (LOG_PUMP_MS, window._pump) in window.scheduled
+
+    join_worker(window)
+    assert drain_lines(window._sink) == ["[play] downloading\n"]
+
+
+def test_run_hands_the_result_to_run_finished_on_the_tk_thread(tmp_path, monkeypatch):
+    from mvsync import session
+    from mvsync.gui import MainWindow
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    window = run_stand_in(tmp_path)
+
+    MainWindow._run(window, "doctor", lambda: 3)
+    join_worker(window)
+
+    assert (0, window._run_finished, "doctor", 3) in window.scheduled
+
+
+def test_run_does_not_schedule_a_finish_once_the_window_is_closing(tmp_path, monkeypatch):
+    from mvsync import session
+    from mvsync.gui import MainWindow
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    window = run_stand_in(tmp_path)
+    gate = threading.Event()
+
+    def work():
+        gate.wait(timeout=5.0)
+        return 0
+
+    MainWindow._run(window, "doctor", work)
+    window._closing = True
+    gate.set()
+    join_worker(window)
+
+    assert not any(call[1] is window._run_finished for call in window.scheduled)
+
+
+def test_a_worker_that_raises_becomes_exit_code_one_instead_of_a_traceback(
+    tmp_path, monkeypatch
+):
+    from mvsync import session
+    from mvsync.gui import MainWindow, drain_lines
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    window = run_stand_in(tmp_path)
+
+    def work():
+        print("[scan] listening")
+        raise RuntimeError("no device")
+
+    MainWindow._run(window, "scan", work)
+    join_worker(window)
+
+    assert (0, window._run_finished, "scan", 1) in window.scheduled
+    assert "[gui] scan failed: no device" in "".join(drain_lines(window._sink))
+
+
+def test_run_refuses_a_second_operation_while_one_is_already_running(tmp_path, monkeypatch):
+    from mvsync import session
+    from mvsync.gui import MainWindow
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    window = run_stand_in(tmp_path)
+    window._busy = True
+    started = []
+
+    MainWindow._run(window, "play", lambda: started.append("ran") or 0)
+    assert started == []
+    assert "another operation is already running" in window._log_text.value
+
+
+def test_run_finished_puts_the_window_back_the_way_it_was(tmp_path, monkeypatch):
+    from mvsync import session
+    from mvsync.gui import MainWindow
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    window = run_stand_in(tmp_path)
+    window._busy = True
+    window._action = "play"
+    window._pump_after = "after#1"
+    window.scheduled.append((250, window._pump))
+    window._sink.write("[play] last words\n")
+
+    MainWindow._run_finished(window, "play", 0)
+
+    assert window._busy is False
+    assert window._action is None
+    assert window._pump_after is None
+    assert window.cancelled == ["after#1"]
+    assert window._hotkey_row.options["packed"] is False
+    assert window._status_label.options["text"] == "idle"
+    assert all(button.state == "normal" for button in window._buttons.values())
+    assert "[play] last words\n" in window._log_text.value
+    assert "exited with code" not in window._log_text.value
+
+
+def test_run_finished_reports_a_nonzero_exit_code(tmp_path, monkeypatch):
+    from mvsync import session
+    from mvsync.gui import MainWindow
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    window = run_stand_in(tmp_path)
+
+    MainWindow._run_finished(window, "doctor", 1)
+    assert "[gui] doctor exited with code 1" in window._log_text.value
+    assert "[gui] doctor finished" in window._log_text.value
+
+
+def test_run_finished_refreshes_the_track_after_a_scan(tmp_path, monkeypatch):
+    from mvsync import session
+    from mvsync.gui import MainWindow
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    refreshed = []
+    window = run_stand_in(tmp_path)
+    window.refresh_track = lambda: refreshed.append(True)
+
+    MainWindow._run_finished(window, "scan", 0)
+    assert refreshed == [True]
+
+
+def test_scan_reads_the_url_on_the_tk_thread_not_inside_the_worker(tmp_path, monkeypatch):
+    """Tk raises RuntimeError for a StringVar touched off its own thread."""
+    from pathlib import Path
+
+    from mvsync import gui, session
+    from mvsync.gui import MainWindow
+    from mvsync.mv_search import Candidate
+    from mvsync.scan_runtime import ScanResult
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    monkeypatch.setattr(
+        gui,
+        "scan_with_candidates",
+        lambda candidates, root=None, on_progress=None: ScanResult(
+            path=Path("map.json"), video_id=candidates[0].video_id
+        ),
+    )
+    window = run_stand_in(tmp_path)
+    window._url_var = ThreadCheckedUrlVar("https://youtu.be/abcdefghijk")
+    window._scan_candidates = lambda url: [Candidate("abcdefghijk", "t", 180.0, "c")]
+    window.scan = partial(MainWindow.scan, window)
+    window._start_scan = partial(MainWindow._start_scan, window)
+    window._scan_worker = partial(MainWindow._scan_worker, window)
+    started = []
+    window._run = lambda action, worker: started.append((action, worker))
+
+    window.scan()
+    action, worker = started.pop()
+
+    results = []
+    thread = threading.Thread(target=lambda: results.append(worker()))
+    thread.start()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert action == "scan"
+    assert results == [0]
+    assert window._url_var.reads == [threading.current_thread()]
+
+
+def test_the_close_prompt_only_promises_to_stop_a_running_play():
+    from mvsync.gui import close_question
+
+    assert "stops it" in close_question("play")
+    assert "stops it" not in close_question("scan")
+    assert "abandons" in close_question("scan")
+    assert "stops it" not in close_question("fix")
+    assert "picker" in close_question("fix")
+    assert "stops it" not in close_question(None)

@@ -179,12 +179,11 @@ def _safe_console() -> None:
 def main(argv: list[str] | None = None) -> int:
     _safe_console()
     args_list = list(sys.argv[1:] if argv is None else argv)
-    if not args_list:
-        return _gui()
-
-    parser = _build_parser()
-    args = parser.parse_args(args_list)
     try:
+        if not args_list:
+            return _gui()
+        parser = _build_parser()
+        args = parser.parse_args(args_list)
         if args.command == "gui":
             return _gui()
         if args.command == "menu":
