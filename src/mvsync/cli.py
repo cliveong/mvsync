@@ -21,6 +21,60 @@ MENU = """
 """.strip()
 
 
+def _doctor_capture_report() -> None:
+    """Print the configured and effective capture backend without raising."""
+    try:
+        from mvsync import config
+
+        mode = config.load_capture_mode()
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        print(f"[doctor] capture: unavailable ({exc})")
+        return
+
+    try:
+        from mvsync import capture_proc
+    except ImportError as exc:
+        print(
+            f"[doctor] capture: mode={mode}, process loopback unavailable ({exc}), "
+            "backend=device loopback"
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        print(
+            f"[doctor] capture: mode={mode}, process loopback check failed ({exc}), "
+            "backend=device loopback"
+        )
+        return
+
+    try:
+        supported = bool(capture_proc.is_supported())
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[doctor] capture: mode={mode}, process loopback check failed ({exc}), "
+            "backend=device loopback"
+        )
+        return
+
+    pid: int | None = None
+    pid_detail = "no audio session"
+    try:
+        pid = capture_proc.resolve_spotify_pid()
+    except Exception as exc:  # noqa: BLE001
+        pid_detail = f"session check failed ({exc})"
+    if pid is not None:
+        pid_detail = f"pid={pid}"
+
+    backend = (
+        "process loopback"
+        if mode == "spotify" and supported and pid is not None
+        else "device loopback"
+    )
+    print(
+        f"[doctor] capture: mode={mode}, process loopback supported={supported}, "
+        f"spotify {pid_detail}, backend={backend}"
+    )
+
+
 def doctor() -> int:
     failures = 0
 
@@ -60,6 +114,8 @@ def doctor() -> int:
         check("loopback device", True, getattr(device, "name", "default speaker"))
     except Exception as exc:  # noqa: BLE001
         check("loopback device", False, str(exc))
+
+    _doctor_capture_report()
 
     try:
         import librosa
