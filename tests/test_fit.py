@@ -720,3 +720,82 @@ def test_fit_in_background_keeps_recording_when_the_fit_fails(tmp_path, monkeypa
     )
 
     assert recording.exists()
+
+
+class GoodRecorder:
+    """Writes a valid wav of the requested length, so the recording passes checks."""
+
+    def __init__(self, path: Path, seconds: float = 1.0) -> None:
+        self.path = path
+        self.peak_db = -20.0
+        self.ready_epoch = time.time()
+        self.seconds = seconds
+
+    def start(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(self.path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(22050)
+            wav.writeframes(b"\x00\x00" * int(22050 * self.seconds))
+
+    def stop(self) -> None:
+        pass
+
+
+def test_a_first_listen_with_no_candidates_is_discarded(tmp_path, monkeypatch, capsys):
+    from mvsync import paths
+    from mvsync import radio as radio_module
+
+    rec_path = paths.ensure_dir(tmp_path / "rec") / "p.wav"
+    recorder = GoodRecorder(rec_path)
+    recording = radio_module.RadioRecording(
+        rec_path=rec_path,
+        candidates=[],
+        track_id="t",
+        artist="a",
+        title="t",
+        track_duration_s=1.0,
+        root=tmp_path,
+    )
+    monkeypatch.setattr(radio_module, "make_recorder", lambda *a, **k: recorder)
+
+    recording.start(position_s=0.0, wall=time.time())
+    recording.finish()
+
+    out = capsys.readouterr().out
+    assert not rec_path.exists()
+    assert not radio_module._pending_fits
+    assert "no MV candidates" in out
+
+
+def test_candidates_can_arrive_after_the_recording_starts(tmp_path, monkeypatch):
+    from mvsync import paths
+    from mvsync import radio as radio_module
+
+    rec_path = paths.ensure_dir(tmp_path / "rec") / "p.wav"
+    recorder = GoodRecorder(rec_path)
+    recording = radio_module.RadioRecording(
+        rec_path=rec_path,
+        candidates=[],
+        track_id="t",
+        artist="a",
+        title="t",
+        track_duration_s=1.0,
+        root=tmp_path,
+    )
+    monkeypatch.setattr(radio_module, "make_recorder", lambda *a, **k: recorder)
+    fitted = []
+    monkeypatch.setattr(
+        radio_module, "_fit_in_background", lambda *args: fitted.append(args)
+    )
+
+    recording.start(position_s=0.0, wall=time.time())
+    recording.set_candidates([Candidate("vid", "title", 1.0, "channel")])
+    recording.finish()
+    radio_module.wait_for_fits()
+
+    assert fitted
+    assert [candidate.video_id for candidate in fitted[0][1]] == ["vid"]
+    assert (rec_path.parent / "vid__t.wav").exists()
+    assert not rec_path.exists()

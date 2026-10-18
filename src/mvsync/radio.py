@@ -16,7 +16,7 @@ import threading
 import time
 from pathlib import Path
 
-from mvsync import paths
+from mvsync import devlog, paths
 from mvsync.align_store import save_alignment
 from mvsync.capture import SILENT_PEAK_DBFS, make_recorder
 from mvsync.match import (
@@ -127,6 +127,10 @@ class RadioRecording:
     def started(self) -> bool:
         return self._started
 
+    def set_candidates(self, candidates: list[Candidate]) -> None:
+        """Attach the search results when they arrive after the recording started."""
+        self._candidates = list(candidates)
+
     def start(self, *, position_s: float, wall: float) -> None:
         if self._capture_failed:
             return
@@ -148,6 +152,13 @@ class RadioRecording:
         ready = self._recorder.ready_epoch if self._recorder.ready_epoch is not None else wall
         self._ready_delay = ready - wall
         self._offset_s = position_s + self._ready_delay
+        devlog.log(
+            "record_start",
+            track_id=self._track_id,
+            backend=getattr(self._recorder, "backend", "?"),
+            ready_delay_s=round(self._ready_delay, 2),
+            offset_s=round(self._offset_s, 2),
+        )
 
     def observe(self, state: SpotifyState, now: float) -> None:
         if self._finished or not self._started:
@@ -181,22 +192,38 @@ class RadioRecording:
             return
         if self._watch.dirty:
             print(f"[play] discarded the recording of {label}: playback was interrupted")
+            devlog.log("record_discarded", track_id=self._track_id, reason="interrupted")
             _discard(self._rec_path)
             return
         if self._recorder.peak_db < SILENT_PEAK_DBFS:
             print(f"[play] recording of {label} was silent; nothing saved")
+            devlog.log("record_discarded", track_id=self._track_id, reason="silent")
             _discard(self._rec_path)
             return
         captured = wav_duration_s(self._rec_path)
         expected = time.time() - self._start_wall - self._ready_delay
         if _capture_lost_audio(expected, captured):
             print(f"[play] recording of {label} lost audio to a capture hiccup; nothing saved")
+            devlog.log("record_discarded", track_id=self._track_id, reason="capture loss")
             _discard(self._rec_path)
             return
         if not self._watch.covered(captured, self._offset_s):
             print(f"[play] recording of {label} stopped early; nothing saved")
+            devlog.log("record_discarded", track_id=self._track_id, reason="stopped early")
             _discard(self._rec_path)
             return
+        if not self._candidates:
+            print(f"[play] no MV candidates for {label}; discarded the recording")
+            devlog.log("record_discarded", track_id=self._track_id, reason="no candidates")
+            _discard(self._rec_path)
+            return
+        self._adopt_video_name()
+        devlog.log(
+            "record_done",
+            track_id=self._track_id,
+            captured_s=round(captured, 2),
+            candidates=[candidate.video_id for candidate in self._candidates[:4]],
+        )
         print(f"[play] captured {label} ({captured:.0f}s of song); fitting it in the background")
         thread = threading.Thread(
             target=_fit_in_background,
@@ -214,6 +241,20 @@ class RadioRecording:
         )
         thread.start()
         _pending_fits.append(thread)
+
+
+    def _adopt_video_name(self) -> None:
+        """Rename a provisional recording once the chosen video id is known."""
+        target = self._rec_path.with_name(
+            f"{self._candidates[0].video_id}__{self._track_id}.wav"
+        )
+        if target == self._rec_path:
+            return
+        try:
+            self._rec_path.replace(target)
+        except OSError:
+            return
+        self._rec_path = target
 
 
 def _fit_in_background(
@@ -235,6 +276,11 @@ def _fit_in_background(
     listen can be refitted by hand.
     """
     try:
+        devlog.log(
+            "fit_start",
+            track_id=track_id,
+            candidates=[candidate.video_id for candidate in candidates[:4]],
+        )
         result = align_against_candidates(
             rec_path,
             candidates,
@@ -248,13 +294,16 @@ def _fit_in_background(
                 f"[play] none of the candidate videos matched {label}; "
                 f"kept {rec_path.name} for a manual refit"
             )
+            devlog.log("fit_failed", track_id=track_id, reason="no candidate matched")
             return
         alignment, video_id = result
         saved = save_alignment(
             paths.ensure_dir(paths.alignments_dir(root)), alignment, offset_s=-offset_s
         )
+        devlog.log("fit_done", track_id=track_id, video_id=video_id, map=saved.name)
         print(f"[play] {label}: aligned to {video_id} ({saved.name}); synced on the next listen")
     except Exception as exc:  # noqa: BLE001 - a background thread must never kill playback
+        devlog.log("fit_failed", track_id=track_id, error=str(exc))
         print(f"[play] could not fit the recording of {label}: {exc}; kept {rec_path.name}")
         return
     _discard(rec_path)
