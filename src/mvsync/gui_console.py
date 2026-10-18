@@ -21,9 +21,10 @@ class LogSink:
         """Append to the buffer, dropping the oldest lines past the cap."""
         with self._lock:
             self._text += text
-            lines = self._text.splitlines(keepends=True)
-            if len(lines) > self._max_lines:
-                self._text = "".join(lines[max(0, len(lines) - self._max_lines) :])
+            parts = self._text.split("\n")
+            lines = len(parts) if not self._text.endswith("\n") else len(parts) - 1
+            if lines > self._max_lines:
+                self._text = "\n".join(parts[lines - self._max_lines :])
         return len(text)
 
     def flush(self) -> None:

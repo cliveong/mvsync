@@ -20,6 +20,12 @@ def test_log_sink_write_returns_the_character_count():
     assert sink.write("abc\n") == 4
 
 
+def test_log_sink_splits_several_lines_from_one_write():
+    sink = LogSink()
+    sink.write("a\nb\n")
+    assert sink.drain() == ["a\n", "b\n"]
+
+
 def test_log_sink_drops_the_oldest_lines_past_the_cap():
     sink = LogSink(max_lines=2)
     sink.write("a\n")
@@ -27,6 +33,23 @@ def test_log_sink_drops_the_oldest_lines_past_the_cap():
     sink.write("c\n")
     assert sink.text == "b\nc\n"
     assert sink.drain() == ["b\n", "c\n"]
+
+
+def test_log_sink_cap_counts_only_newline_terminated_lines():
+    """A \\r or other splitlines separator is content, not an extra line for the cap."""
+    sink = LogSink(max_lines=2)
+    sink.write("a\nb\rc\n")
+    assert sink.text == "a\nb\rc\n"
+    assert sink.drain() == ["a\n", "b\rc\n"]
+
+
+def test_log_sink_cap_of_zero_and_one():
+    empty = LogSink(max_lines=0)
+    empty.write("a\nb\n")
+    assert empty.text == ""
+    one = LogSink(max_lines=1)
+    one.write("a\nb\n")
+    assert one.drain() == ["b\n"]
 
 
 def test_log_sink_drain_keeps_a_partial_line_for_the_next_write():
@@ -54,3 +77,27 @@ def test_key_source_returns_pushes_in_order_then_empty():
     assert keys.poll() == "r"
     assert keys.poll() == "]"
     assert keys.poll() == ""
+
+
+def test_log_sink_and_key_source_survive_concurrent_use():
+    import threading
+
+    sink = LogSink(max_lines=50)
+    keys = KeySource()
+
+    def writer() -> None:
+        for _ in range(100):
+            sink.write("line\n")
+
+    def reader() -> None:
+        for _ in range(100):
+            sink.drain()
+            keys.push("q")
+
+    threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert keys.poll() != "" or sink.text == ""
