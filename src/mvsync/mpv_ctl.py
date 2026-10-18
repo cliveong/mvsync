@@ -45,6 +45,7 @@ class MpvController:
             keep_open=True,
             mute=True,
             terminal="no",
+            auto_window_resize=False,
             **extra_args,
         )
 
@@ -76,6 +77,10 @@ class MpvController:
         return bool(self._require().pause)
 
     @property
+    def fullscreen(self) -> bool:
+        return bool(self._require().fullscreen)
+
+    @property
     def eof_reached(self) -> bool:
         return bool(self._require().eof_reached)
 
@@ -90,6 +95,9 @@ class MpvController:
 
     def set_paused(self, paused: bool) -> None:
         self._require().pause = bool(paused)
+
+    def set_fullscreen(self, fullscreen: bool) -> None:
+        self._require().fullscreen = bool(fullscreen)
 
     def stop(self) -> None:
         if self._mpv is None:
