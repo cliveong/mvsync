@@ -1,3 +1,10 @@
+from functools import partial
+
+import pytest
+
+from mvsync.gui_console import KeySource, LogSink
+
+
 class FakeText:
     """Stand-in for a read-only tk.Text: insert appends, configure tracks state."""
 
@@ -13,6 +20,46 @@ class FakeText:
 
     def see(self, index):
         pass
+
+
+class FakeEvent:
+    """Only the two attributes MainWindow._on_key reads, so no Tk root is needed."""
+
+    def __init__(self, keysym, widget=None):
+        self.keysym = keysym
+        self.widget = widget
+
+
+class StandInWindow:
+    """Only the attributes MainWindow._on_key, ._pump and ._scan_candidates read."""
+
+    def __init__(self, *, closing=False, sink=None, state=None):
+        self.url_entry = object()
+        self.other_widget = object()
+        self._keys = KeySource()
+        self._key_consumers = (self.url_entry,)
+        self._log_text = FakeText()
+        self._sink = sink if sink is not None else LogSink()
+        self._closing = closing
+        self._state = state
+        self._pump_after = None
+        self.scheduled = []
+
+    def after(self, delay_ms, callback):
+        self.scheduled.append((delay_ms, callback))
+        return f"after#{len(self.scheduled)}"
+
+    def after_cancel(self, handle):
+        self.scheduled.remove(handle)
+
+
+def pump_stand_in(**kwargs):
+    """A stand-in whose _pump is the real one, since the pump reschedules itself."""
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow(**kwargs)
+    window._pump = partial(MainWindow._pump, window)
+    return window
 
 
 def test_gui_module_exposes_run_fixer():
@@ -46,7 +93,7 @@ def test_cli_parses_the_fix_command():
 def test_main_window_actions_map_to_the_documented_commands():
     from mvsync.gui import MAIN_ACTIONS
 
-    assert MAIN_ACTIONS == ("doctor", "scan", "fix", "play")
+    assert MAIN_ACTIONS == ("play", "scan", "fix", "doctor")
 
 
 def test_log_lines_are_appended_in_order():
@@ -73,3 +120,127 @@ def test_run_gui_takes_the_root_positionally_or_by_keyword():
     parameter = inspect.signature(run_gui).parameters["root"]
     assert parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert parameter.default is None
+
+
+# Every hotkey the play loop consumes, and the physical key it comes from. A typo
+# here (say "bracketleft": "{") would quietly kill an offset trim on the user's
+# keyboard, so the mapping is pinned rather than derived.
+HOTKEY_CASES = [
+    ("q", "q"),
+    ("r", "r"),
+    ("bracketleft", "["),
+    ("bracketright", "]"),
+    ("p", "p"),
+]
+
+
+def test_each_hotkey_keysym_pushes_the_key_the_play_loop_consumes():
+    from mvsync.gui import HOTKEYS_BY_KEYSYM, MainWindow
+
+    assert sorted(HOTKEYS_BY_KEYSYM) == sorted(keysym for keysym, _ in HOTKEY_CASES)
+    for keysym, key in HOTKEY_CASES:
+        window = StandInWindow()
+        assert MainWindow._on_key(window, FakeEvent(keysym)) == "break"
+        assert window._keys.poll() == key, keysym
+
+
+def test_every_pushed_hotkey_is_one_the_play_loop_documents():
+    from mvsync import sync_runtime
+    from mvsync.gui import HOTKEYS_BY_KEYSYM
+
+    for key in HOTKEYS_BY_KEYSYM.values():
+        assert key in sync_runtime.HOTKEYS, key
+
+
+def test_an_unknown_keysym_is_ignored():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow()
+    assert MainWindow._on_key(window, FakeEvent("x")) is None
+    assert window._keys.poll() == ""
+
+
+def test_a_key_typed_into_the_url_entry_is_not_a_hotkey():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow()
+    for keysym, _ in HOTKEY_CASES:
+        event = FakeEvent(keysym, widget=window.url_entry)
+        assert MainWindow._on_key(window, event) is None, keysym
+    assert window._keys.poll() == ""
+
+
+def test_a_key_from_any_other_widget_is_still_a_hotkey():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow()
+    event = FakeEvent("q", widget=window.other_widget)
+    assert MainWindow._on_key(window, event) == "break"
+    assert window._keys.poll() == "q"
+
+
+def test_the_log_pump_shows_worker_output_while_the_operation_runs():
+    from mvsync.gui import LOG_PUMP_MS, MainWindow
+
+    window = pump_stand_in()
+    window._sink.write("[play] one\n")
+    MainWindow._pump(window)
+    assert window._log_text.value == "[play] one\n"
+    assert window.scheduled == [(LOG_PUMP_MS, window._pump)]
+    assert window._pump_after == "after#1"
+
+
+def test_the_pump_and_the_final_drain_never_double_print_or_drop_lines():
+    from mvsync.gui import MainWindow, append_log, drain_lines
+
+    window = pump_stand_in()
+    window._sink.write("[play] one\n")
+    window._sink.write("[play] two")
+    MainWindow._pump(window)
+    assert window._log_text.value == "[play] one\n"
+
+    window._sink.write(" more\n")
+    append_log(window._log_text, drain_lines(window._sink))
+    MainWindow._pump(window)
+    assert window._log_text.value == "[play] one\n[play] two more\n"
+    assert drain_lines(window._sink) == []
+
+
+def test_the_pump_stops_when_the_window_is_closing():
+    from mvsync.gui import MainWindow
+
+    window = pump_stand_in(closing=True)
+    window._sink.write("[play] one\n")
+    MainWindow._pump(window)
+    assert window._log_text.value == ""
+    assert window.scheduled == []
+
+
+def test_draining_without_a_sink_yields_no_lines():
+    from mvsync.gui import drain_lines
+
+    assert drain_lines(None) == []
+
+
+def test_scan_candidates_uses_the_url_read_on_the_tk_thread():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow(state=None)
+    candidates = MainWindow._scan_candidates(window, "https://youtu.be/abcdefghijk")
+    assert [c.video_id for c in candidates] == ["abcdefghijk"]
+
+
+def test_scan_candidates_rejects_an_unparsable_url():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow(state=None)
+    with pytest.raises(ValueError):
+        MainWindow._scan_candidates(window, "not a url")
+
+
+def test_scan_candidates_without_a_url_or_a_track_raises():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow(state=None)
+    with pytest.raises(RuntimeError):
+        MainWindow._scan_candidates(window, "")

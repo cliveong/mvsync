@@ -21,11 +21,12 @@ from mvsync.mv_search import Candidate, pick_mv_candidates, prioritize, video_ur
 from mvsync.scan_runtime import ScanAborted, ScanResult, scan_with_candidates
 from mvsync.spotify_smtc import SpotifyBridge, SpotifyState
 
-MAIN_ACTIONS = ("doctor", "scan", "fix", "play")
+MAIN_ACTIONS = ("play", "scan", "fix", "doctor")
 ACTION_LABELS = {"play": "Play", "scan": "Scan", "fix": "Fix MV", "doctor": "Doctor"}
 HOTKEYS_BY_KEYSYM = {"q": "q", "r": "r", "bracketleft": "[", "bracketright": "]", "p": "p"}
 FIX_COMMAND = ("-m", "mvsync", "fix")
 CLOSE_STOP_TIMEOUT_S = 10.0
+LOG_PUMP_MS = 250
 
 
 def append_log(widget: tk.Text, lines: list[str]) -> None:
@@ -35,6 +36,11 @@ def append_log(widget: tk.Text, lines: list[str]) -> None:
         widget.insert("end", line)
     widget.see("end")
     widget.configure(state="disabled")
+
+
+def drain_lines(sink: LogSink | None) -> list[str]:
+    """The complete lines a worker has printed so far, taken out of its buffer."""
+    return sink.drain() if sink is not None else []
 
 
 def format_length(seconds: float | None) -> str:
@@ -73,8 +79,10 @@ class MainWindow(tk.Tk):
         self._closing = False
         self._action: str | None = None
         self._sink: LogSink | None = None
+        self._pump_after: str | None = None
         self._worker: threading.Thread | None = None
         self._buttons: dict[str, ttk.Button] = {}
+        self._key_consumers: tuple[tk.Misc, ...] = ()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self.refresh_track)
@@ -101,9 +109,10 @@ class MainWindow(tk.Tk):
         url_row = ttk.Frame(self, padding=(8, 8))
         url_row.pack(fill="x")
         self._url_var = tk.StringVar()
-        entry = ttk.Entry(url_row, textvariable=self._url_var)
-        entry.pack(side="left", fill="x", expand=True)
-        entry.bind("<Return>", lambda event: self.use_url())
+        self._url_entry = ttk.Entry(url_row, textvariable=self._url_var)
+        self._url_entry.pack(side="left", fill="x", expand=True)
+        self._url_entry.bind("<Return>", lambda event: self.use_url())
+        self._key_consumers = (self._url_entry,)
         ttk.Button(url_row, text="Use this URL", command=self.use_url).pack(side="left", padx=4)
 
         self._hotkey_row = ttk.Frame(self, padding=(8, 0))
@@ -159,7 +168,14 @@ class MainWindow(tk.Tk):
         self._keys.push(key)
 
     def _on_key(self, event: tk.Event) -> str | None:
-        """Match keysym, never event.char: a non-US layout reports jamo for [ and ]."""
+        """Match keysym, never event.char: a non-US layout reports jamo for [ and ].
+
+        A widget that consumes the key itself (the URL entry) keeps it: Tk runs the
+        toplevel binding after the class binding, so typing there would otherwise
+        quit play, resync, toggle Spotify, or trim the offset.
+        """
+        if event.widget in self._key_consumers:
+            return None
         key = HOTKEYS_BY_KEYSYM.get(event.keysym)
         if key is None:
             return None
@@ -199,6 +215,7 @@ class MainWindow(tk.Tk):
         self._set_status(f"{action} running...")
         if action == "play":
             self._set_hotkeys_visible(True)
+        self._pump_after = self.after(LOG_PUMP_MS, self._pump)
 
         def body() -> None:
             with contextlib.redirect_stdout(sink):
@@ -215,11 +232,24 @@ class MainWindow(tk.Tk):
         self._worker = threading.Thread(target=body, daemon=True)
         self._worker.start()
 
-    def _run_finished(self, action: str, rc: int) -> None:
+    def _pump(self) -> None:
+        """Show the worker's output while it runs; a play session lasts an hour."""
+        self._pump_after = None
         if self._closing:
             return
-        if self._sink is not None:
-            append_log(self._log_text, self._sink.drain())
+        append_log(self._log_text, drain_lines(self._sink))
+        self._pump_after = self.after(LOG_PUMP_MS, self._pump)
+
+    def _cancel_pump(self) -> None:
+        if self._pump_after is not None:
+            self.after_cancel(self._pump_after)
+            self._pump_after = None
+
+    def _run_finished(self, action: str, rc: int) -> None:
+        self._cancel_pump()
+        if self._closing:
+            return
+        append_log(self._log_text, drain_lines(self._sink))
         self._log(f"[gui] {action} finished")
         if rc:
             self._log(f"[gui] {action} exited with code {rc}")
@@ -245,17 +275,22 @@ class MainWindow(tk.Tk):
         return sync_runtime.run_play(None, root=self._root_dir, keys=self._keys.poll)
 
     def scan(self) -> None:
-        self._run("scan", self._scan_worker)
+        self._start_scan(self._url_var.get().strip())
 
     def use_url(self) -> None:
-        if not self._url_var.get().strip():
+        url = self._url_var.get().strip()
+        if not url:
             self._log("[gui] type a youtube url first")
             return
-        self._run("scan", self._scan_worker)
+        self._start_scan(url)
 
-    def _scan_worker(self) -> int:
+    def _start_scan(self, url: str) -> None:
+        """Read the entry here, on the Tk thread; the worker only gets a plain string."""
+        self._run("scan", lambda: self._scan_worker(url))
+
+    def _scan_worker(self, url: str) -> int:
         try:
-            candidates = self._scan_candidates()
+            candidates = self._scan_candidates(url)
         except (ValueError, RuntimeError) as exc:
             print(f"[scan] aborted: {exc}")
             return 1
@@ -263,9 +298,8 @@ class MainWindow(tk.Tk):
         print(f"[scan] saved {result.path.name} for {result.video_id}")
         return 0
 
-    def _scan_candidates(self) -> list[Candidate]:
-        """The candidates a scan records against: the typed url, else a fresh search."""
-        url = self._url_var.get().strip()
+    def _scan_candidates(self, url: str) -> list[Candidate]:
+        """The candidates a scan records against: the given url, else a fresh search."""
         if url:
             return [
                 Candidate(video_id=parse_video_id(url), title="", duration_s=None, channel="")
@@ -297,6 +331,7 @@ class MainWindow(tk.Tk):
         ):
             return
         self._closing = True
+        self._cancel_pump()
         if self._action == "play":
             self._stop_play()
         self.destroy()
