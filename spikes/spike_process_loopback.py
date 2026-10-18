@@ -28,6 +28,16 @@ def _wait_for_pid(timeout: float = PID_TIMEOUT_S) -> int | None:
     return None
 
 
+def _wait_until_paused(bridge, timeout: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = bridge.current()
+        if state is not None and not state.playing:
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def main() -> int:
     target = paths.ensure_dir(paths.recordings_dir()) / "spike-process.wav"
     bridge = SpotifyBridge()
@@ -62,7 +72,10 @@ def main() -> int:
     finally:
         if toggled:
             bridge.toggle_play_pause()
-            print("restored spotify to paused")
+            if _wait_until_paused(bridge):
+                print("restored spotify to paused")
+            else:
+                print("WARNING: could not confirm spotify was restored to paused")
 
 
 if __name__ == "__main__":

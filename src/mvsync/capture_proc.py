@@ -90,12 +90,9 @@ class AUDIOCLIENT_ACTIVATION_PARAMS(Structure):
 
 
 class _BLOB(Structure):
-    """Packed BLOB used by the 16-byte compatibility PROPVARIANT."""
-
-    _pack_ = 1
     _fields_ = [
         ("cbSize", c_ulong),
-        ("pBlobData", c_uint32),
+        ("pBlobData", c_void_p),
     ]
 
 
@@ -104,34 +101,6 @@ class _PROPVARIANT_UNION(Union):
 
 
 class PROPVARIANT(Structure):
-    """Minimal 16-byte PROPVARIANT layout pinned by the unit test.
-
-    The live x64 activation uses ``_ACTIVATION_PROPVARIANT`` below, whose BLOB
-    carries a real 64-bit pointer.
-    """
-
-    _pack_ = 1
-    _fields_ = [
-        ("vt", c_ushort),
-        ("wReserved1", c_ushort),
-        ("wReserved2", c_ushort),
-        ("wReserved3", c_ushort),
-        ("union", _PROPVARIANT_UNION),
-    ]
-
-
-class _BLOB64(Structure):
-    _fields_ = [
-        ("cbSize", c_ulong),
-        ("pBlobData", c_void_p),
-    ]
-
-
-class _PROPVARIANT_UNION64(Union):
-    _fields_ = [("blob", _BLOB64)]
-
-
-class _ACTIVATION_PROPVARIANT(Structure):
     """Native x64 PROPVARIANT: 8-byte header plus a 16-byte BLOB union."""
 
     _fields_ = [
@@ -139,7 +108,7 @@ class _ACTIVATION_PROPVARIANT(Structure):
         ("wReserved1", c_ushort),
         ("wReserved2", c_ushort),
         ("wReserved3", c_ushort),
-        ("union", _PROPVARIANT_UNION64),
+        ("union", _PROPVARIANT_UNION),
     ]
 
 
@@ -217,8 +186,6 @@ _kernel32.CreateEventW.argtypes = [c_void_p, ctypes.c_int, ctypes.c_int, LPCWSTR
 _kernel32.CreateEventW.restype = HANDLE
 _kernel32.WaitForSingleObject.argtypes = [HANDLE, DWORD]
 _kernel32.WaitForSingleObject.restype = DWORD
-_kernel32.SetEvent.argtypes = [HANDLE]
-_kernel32.SetEvent.restype = ctypes.c_int
 _kernel32.CloseHandle.argtypes = [HANDLE]
 _kernel32.CloseHandle.restype = ctypes.c_int
 
@@ -227,7 +194,7 @@ _ActivateAudioInterfaceAsync = _mmdevapi.ActivateAudioInterfaceAsync
 _ActivateAudioInterfaceAsync.argtypes = [
     LPCWSTR,
     POINTER(GUID),
-    POINTER(_ACTIVATION_PROPVARIANT),
+    POINTER(PROPVARIANT),
     POINTER(IActivateAudioInterfaceCompletionHandler),
     POINTER(POINTER(IActivateAudioInterfaceAsyncOperation)),
 ]
@@ -292,7 +259,7 @@ def _make_format(samplerate: int, channels: int) -> WAVEFORMATEX:
     )
 
 
-def _make_activation(pid: int) -> tuple[_ACTIVATION_PROPVARIANT, AUDIOCLIENT_ACTIVATION_PARAMS]:
+def _make_activation(pid: int) -> tuple[PROPVARIANT, AUDIOCLIENT_ACTIVATION_PARAMS]:
     activation = AUDIOCLIENT_ACTIVATION_PARAMS(
         ActivationType=AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         ProcessLoopbackParams=AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS(
@@ -300,7 +267,7 @@ def _make_activation(pid: int) -> tuple[_ACTIVATION_PROPVARIANT, AUDIOCLIENT_ACT
             ProcessLoopbackMode=PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
         ),
     )
-    propvariant = _ACTIVATION_PROPVARIANT()
+    propvariant = PROPVARIANT()
     propvariant.vt = VT_BLOB
     propvariant.union.blob.cbSize = ctypes.sizeof(activation)
     propvariant.union.blob.pBlobData = ctypes.cast(byref(activation), c_void_p)
@@ -337,8 +304,6 @@ class ProcessLoopbackRecorder:
 
     def stop(self) -> Path:
         self._stop.set()
-        if self._event_handle:
-            _kernel32.SetEvent(self._event_handle)
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             if self._thread.is_alive():
@@ -350,12 +315,13 @@ class ProcessLoopbackRecorder:
     def _run(self) -> None:
         self._client = None
         initialized = False
-        sink = PcmSink(self.path, samplerate=self.samplerate, channels=self.channels)
+        sink: PcmSink | None = None
         try:
             import comtypes
 
             comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
             initialized = True
+            sink = PcmSink(self.path, samplerate=self.samplerate, channels=self.channels)
             sink.open()
             self._client = self._activate()
             self._event_handle = _kernel32.CreateEventW(None, False, False, None)
@@ -378,7 +344,9 @@ class ProcessLoopbackRecorder:
                     _kernel32.CloseHandle(self._event_handle)
                     self._event_handle = None
             finally:
-                sink.close()
+                if sink is not None:
+                    with contextlib.suppress(Exception):
+                        sink.close()
                 self._client = None
                 self._capture = None
                 if initialized:
@@ -427,7 +395,7 @@ class ProcessLoopbackRecorder:
                 continue
             if result != WAIT_OBJECT_0:
                 raise OSError(ctypes.get_last_error(), "WaitForSingleObject failed")
-            while True:
+            while not self._stop.is_set():
                 frames = int(self._capture.GetNextPacketSize())
                 if frames == 0:
                     break

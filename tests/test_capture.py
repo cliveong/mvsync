@@ -70,7 +70,14 @@ def test_process_structs_have_the_win32_layout():
 
     assert ctypes.sizeof(capture_proc.WAVEFORMATEX) == 18
     assert ctypes.sizeof(capture_proc.AUDIOCLIENT_ACTIVATION_PARAMS) == 12
-    assert ctypes.sizeof(capture_proc.PROPVARIANT) == 16
+    assert ctypes.sizeof(capture_proc.PROPVARIANT) == 24
+    assert capture_proc.PROPVARIANT.union.offset == 8
+    assert capture_proc._BLOB.pBlobData.offset == 8
+    assert (
+        capture_proc.PROPVARIANT.union.offset
+        + capture_proc._BLOB.pBlobData.offset
+        == 16
+    )
 
 
 def test_process_recorder_keeps_its_pid():
