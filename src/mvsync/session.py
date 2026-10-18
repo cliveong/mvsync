@@ -35,19 +35,43 @@ def _pid_alive(pid: int) -> bool:
         kernel32.CloseHandle(handle)
 
 
+def lock_refusal_message(pid: int) -> str:
+    """The one wording for a held lock, shared by ``claim`` and the GUI."""
+    return (
+        f"another session is already running (pid {pid}); close it first, "
+        f"or delete data/{LOCK_NAME} if it is stale"
+    )
+
+
+def lock_holder(root: Path | None = None) -> int:
+    """The live foreign pid holding the lock, or 0 when the lock is free.
+
+    Reads only. Own pid counts as free: the GUI's own worker claims the lock
+    under this process, so counting it would report our own session as foreign.
+    """
+    lock = _lock_path(root)
+    if not lock.is_file():
+        return 0
+    try:
+        pid = int(lock.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0
+    if pid and pid != os.getpid() and _pid_alive(pid):
+        return pid
+    return 0
+
+
+def is_locked(root: Path | None = None) -> bool:
+    """True when another live session holds the lock; never writes the lock file."""
+    return lock_holder(root) != 0
+
+
 def claim(root: Path | None = None) -> None:
     """Claim the session lock, refusing when another live session holds it."""
     lock = _lock_path(root)
-    if lock.is_file():
-        try:
-            pid = int(lock.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            pid = 0
-        if pid and pid != os.getpid() and _pid_alive(pid):
-            raise RuntimeError(
-                f"another session is already running (pid {pid}); close it first, "
-                f"or delete data/{LOCK_NAME} if it is stale"
-            )
+    pid = lock_holder(root)
+    if pid:
+        raise RuntimeError(lock_refusal_message(pid))
     paths.ensure_dir(lock.parent)
     lock.write_text(str(os.getpid()), encoding="utf-8")
 

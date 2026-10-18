@@ -341,6 +341,61 @@ def test_session_claim_allows_own_pid(tmp_path, monkeypatch):
     session.release(tmp_path)
 
 
+def test_is_locked_is_false_without_a_lock_file(tmp_path):
+    from mvsync import session
+
+    assert session.is_locked(tmp_path) is False
+
+
+def test_is_locked_is_true_for_another_live_pid(tmp_path, monkeypatch):
+    from mvsync import session
+
+    _write_lock(tmp_path, "424242")
+    monkeypatch.setattr(session, "_pid_alive", lambda pid: True)
+    assert session.is_locked(tmp_path) is True
+
+
+def test_is_locked_ignores_our_own_pid(tmp_path, monkeypatch):
+    import os
+
+    from mvsync import session
+
+    _write_lock(tmp_path, str(os.getpid()))
+    monkeypatch.setattr(session, "_pid_alive", lambda pid: True)
+    assert session.is_locked(tmp_path) is False
+
+
+def test_is_locked_ignores_a_dead_pid(tmp_path, monkeypatch):
+    from mvsync import session
+
+    _write_lock(tmp_path, "424242")
+    monkeypatch.setattr(session, "_pid_alive", lambda pid: False)
+    assert session.is_locked(tmp_path) is False
+
+
+def test_is_locked_only_reads_and_never_creates_the_lock_file(tmp_path):
+    from mvsync import session
+
+    assert session.is_locked(tmp_path) is False
+    assert not (tmp_path / "data").exists()
+
+
+def test_lock_holder_reports_the_live_foreign_pid(tmp_path, monkeypatch):
+    from mvsync import session
+
+    _write_lock(tmp_path, "424242")
+    monkeypatch.setattr(session, "_pid_alive", lambda pid: True)
+    assert session.lock_holder(tmp_path) == 424242
+
+
+def test_lock_refusal_message_names_the_pid_and_the_lock_file():
+    from mvsync.session import lock_refusal_message
+
+    message = lock_refusal_message(424242)
+    assert "another session is already running (pid 424242)" in message
+    assert "session.lock" in message
+
+
 def test_radio_recording_ignores_observations_before_start(tmp_path):
     from mvsync.mv_search import Candidate
     from mvsync.radio import RadioRecording

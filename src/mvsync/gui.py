@@ -13,7 +13,7 @@ from functools import partial
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from mvsync import paths
+from mvsync import paths, session
 from mvsync.align_store import load_newest_alignment, make_track_id
 from mvsync.gui_console import KeySource, LogSink
 from mvsync.mv_audio import parse_video_id
@@ -27,6 +27,11 @@ HOTKEYS_BY_KEYSYM = {"q": "q", "r": "r", "bracketleft": "[", "bracketright": "]"
 FIX_COMMAND = ("-m", "mvsync", "fix")
 CLOSE_STOP_TIMEOUT_S = 10.0
 LOG_PUMP_MS = 250
+
+
+def enabled_actions(busy: bool, locked: bool) -> tuple[str, ...]:
+    """The actions the window offers: none while it works or the lock is held."""
+    return () if busy or locked else MAIN_ACTIONS
 
 
 def append_log(widget: tk.Text, lines: list[str]) -> None:
@@ -76,6 +81,7 @@ class MainWindow(tk.Tk):
         self._state: SpotifyState | None = None
         self._keys = KeySource()
         self._busy = False
+        self._locked = False
         self._closing = False
         self._action: str | None = None
         self._sink: LogSink | None = None
@@ -152,10 +158,20 @@ class MainWindow(tk.Tk):
     def _set_status(self, text: str) -> None:
         self._status_label.configure(text=text)
 
+    def _refresh_lock(self) -> bool:
+        """Re-read the lock, so a session started in another console greys the buttons."""
+        pid = session.lock_holder(self._root_dir)
+        if pid and not self._locked:
+            self._log(f"[gui] {session.lock_refusal_message(pid)}")
+        self._locked = pid != 0
+        self._update_buttons()
+        return self._locked
+
     def _update_buttons(self) -> None:
+        enabled = enabled_actions(self._busy, self._locked)
         for action, button in self._buttons.items():
             stoppable = action == "play" and self._action == "play"
-            button.configure(state="normal" if stoppable or not self._busy else "disabled")
+            button.configure(state="normal" if stoppable or action in enabled else "disabled")
 
     def _set_hotkeys_visible(self, visible: bool) -> None:
         if visible:
@@ -201,11 +217,15 @@ class MainWindow(tk.Tk):
                 else f"{state.artist} - {state.title} ({format_length(state.duration_s)})"
             )
         )
+        self._refresh_lock()
 
     def _run(self, action: str, worker: Callable[[], int]) -> None:
         """Run one operation on a worker thread, capturing stdout into the log pane."""
         if self._busy:
             self._log("[gui] another operation is already running")
+            return
+        if self._refresh_lock():
+            self._log(f"[gui] {action} refused: another session is already running")
             return
         self._busy = True
         self._action = action
@@ -256,7 +276,7 @@ class MainWindow(tk.Tk):
         self._busy = False
         self._action = None
         self._set_hotkeys_visible(False)
-        self._update_buttons()
+        self._refresh_lock()
         self._set_status("idle")
         if action == "scan":
             self.refresh_track()

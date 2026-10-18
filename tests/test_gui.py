@@ -2,7 +2,18 @@ from functools import partial
 
 import pytest
 
+from mvsync.gui import MAIN_ACTIONS
 from mvsync.gui_console import KeySource, LogSink
+
+
+class FakeButton:
+    """Stand-in for a ttk.Button: configure records the last state given."""
+
+    def __init__(self):
+        self.state = "normal"
+
+    def configure(self, **kwargs):
+        self.state = kwargs.get("state", self.state)
 
 
 class FakeText:
@@ -59,6 +70,22 @@ def pump_stand_in(**kwargs):
 
     window = StandInWindow(**kwargs)
     window._pump = partial(MainWindow._pump, window)
+    return window
+
+
+def lock_stand_in(root):
+    """A stand-in whose lock probe and button update are the real MainWindow ones."""
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow()
+    window._busy = False
+    window._action = None
+    window._locked = False
+    window._root_dir = root
+    window._buttons = {action: FakeButton() for action in MAIN_ACTIONS}
+    window._log = partial(MainWindow._log, window)
+    window._refresh_lock = partial(MainWindow._refresh_lock, window)
+    window._update_buttons = partial(MainWindow._update_buttons, window)
     return window
 
 
@@ -244,3 +271,83 @@ def test_scan_candidates_without_a_url_or_a_track_raises():
     window = StandInWindow(state=None)
     with pytest.raises(RuntimeError):
         MainWindow._scan_candidates(window, "")
+
+
+def test_enabled_actions_lock_out_everything_while_a_session_holds_the_lock():
+    from mvsync.gui import enabled_actions
+
+    assert enabled_actions(busy=False, locked=True) == ()
+
+
+def test_enabled_actions_allow_play_when_idle_and_unlocked():
+    from mvsync.gui import enabled_actions
+
+    assert enabled_actions(busy=False, locked=False) == MAIN_ACTIONS
+
+
+def test_enabled_actions_disable_everything_while_busy():
+    from mvsync.gui import enabled_actions
+
+    assert enabled_actions(busy=True, locked=False) == ()
+
+
+def test_the_buttons_go_disabled_while_another_session_holds_the_lock(tmp_path, monkeypatch):
+    from mvsync import session
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
+    window = lock_stand_in(tmp_path)
+
+    assert window._refresh_lock() is True
+    assert window._locked is True
+    assert all(button.state == "disabled" for button in window._buttons.values())
+    assert "another session is already running (pid 424242)" in window._log_text.value
+
+
+def test_the_lock_notice_is_logged_once_not_on_every_refresh(tmp_path, monkeypatch):
+    from mvsync import session
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
+    window = lock_stand_in(tmp_path)
+    window._refresh_lock()
+    window._log_text.value = ""
+
+    window._refresh_lock()
+    assert window._log_text.value == ""
+
+
+def test_the_buttons_come_back_when_the_other_session_ends(tmp_path, monkeypatch):
+    from mvsync import session
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
+    window = lock_stand_in(tmp_path)
+    window._refresh_lock()
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    assert window._refresh_lock() is False
+    assert all(button.state == "normal" for button in window._buttons.values())
+
+
+def test_the_play_button_stays_enabled_as_stop_while_its_own_session_runs(tmp_path, monkeypatch):
+    from mvsync import session
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    window = lock_stand_in(tmp_path)
+    window._busy = True
+    window._action = "play"
+
+    window._refresh_lock()
+    assert window._buttons["play"].state == "normal"
+    assert window._buttons["scan"].state == "disabled"
+
+
+def test_a_locked_window_starts_no_worker_and_says_why(tmp_path, monkeypatch):
+    from mvsync import session
+    from mvsync.gui import MainWindow
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
+    window = lock_stand_in(tmp_path)
+    started = []
+
+    MainWindow._run(window, "play", lambda: started.append("ran") or 0)
+    assert started == []
+    assert "another session is already running (pid 424242)" in window._log_text.value
