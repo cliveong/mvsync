@@ -1,18 +1,40 @@
-"""Tkinter MV picker: see the ranked candidates for the current track and rebuild its map."""
+"""Tkinter windows: the everyday main window, plus the MV picker behind Fix MV."""
 
 from __future__ import annotations
 
+import contextlib
+import subprocess
+import sys
 import threading
 import tkinter as tk
 import webbrowser
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from tkinter import messagebox, ttk
 
 from mvsync import paths
 from mvsync.align_store import load_newest_alignment, make_track_id
+from mvsync.gui_console import KeySource, LogSink
+from mvsync.mv_audio import parse_video_id
 from mvsync.mv_search import Candidate, pick_mv_candidates, prioritize, video_url
 from mvsync.scan_runtime import ScanAborted, ScanResult, scan_with_candidates
 from mvsync.spotify_smtc import SpotifyBridge, SpotifyState
+
+MAIN_ACTIONS = ("doctor", "scan", "fix", "play")
+ACTION_LABELS = {"play": "Play", "scan": "Scan", "fix": "Fix MV", "doctor": "Doctor"}
+HOTKEYS_BY_KEYSYM = {"q": "q", "r": "r", "bracketleft": "[", "bracketright": "]", "p": "p"}
+FIX_COMMAND = ("-m", "mvsync", "fix")
+CLOSE_STOP_TIMEOUT_S = 10.0
+
+
+def append_log(widget: tk.Text, lines: list[str]) -> None:
+    """Append whole lines to a read-only text pane and scroll to the newest."""
+    widget.configure(state="normal")
+    for line in lines:
+        widget.insert("end", line)
+    widget.see("end")
+    widget.configure(state="disabled")
 
 
 def format_length(seconds: float | None) -> str:
@@ -35,6 +57,255 @@ def candidate_row_values(
         format_length(candidate.duration_s),
         status,
     )
+
+
+class MainWindow(tk.Tk):
+    """Everyday window: play, scan, fix, and doctor over one live log pane."""
+
+    def __init__(self, root: Path | None = None) -> None:
+        super().__init__()
+        self.title("mvsync")
+        self.minsize(680, 560)
+        self._root_dir = root
+        self._state: SpotifyState | None = None
+        self._keys = KeySource()
+        self._busy = False
+        self._closing = False
+        self._action: str | None = None
+        self._sink: LogSink | None = None
+        self._worker: threading.Thread | None = None
+        self._buttons: dict[str, ttk.Button] = {}
+        self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(100, self.refresh_track)
+
+    def _build_ui(self) -> None:
+        top = ttk.Frame(self, padding=8)
+        top.pack(fill="x")
+        self._track_label = ttk.Label(top, text="no Spotify session")
+        self._track_label.pack(side="left", fill="x", expand=True)
+        ttk.Button(top, text="Refresh track", command=self.refresh_track).pack(side="right")
+
+        actions = ttk.Frame(self, padding=(8, 0))
+        actions.pack(fill="x")
+        for action in MAIN_ACTIONS:
+            button = ttk.Button(
+                actions,
+                text=ACTION_LABELS[action],
+                command=partial(self._dispatch, action),
+            )
+            button.pack(side="left", padx=4)
+            self._buttons[action] = button
+        ttk.Button(actions, text="Quit", command=self._on_close).pack(side="right", padx=4)
+
+        url_row = ttk.Frame(self, padding=(8, 8))
+        url_row.pack(fill="x")
+        self._url_var = tk.StringVar()
+        entry = ttk.Entry(url_row, textvariable=self._url_var)
+        entry.pack(side="left", fill="x", expand=True)
+        entry.bind("<Return>", lambda event: self.use_url())
+        ttk.Button(url_row, text="Use this URL", command=self.use_url).pack(side="left", padx=4)
+
+        self._hotkey_row = ttk.Frame(self, padding=(8, 0))
+        for key in HOTKEYS_BY_KEYSYM.values():
+            button = ttk.Button(self._hotkey_row, text=key, command=partial(self._push_key, key))
+            button.pack(side="left", padx=2)
+
+        self._status_label = ttk.Label(self, text="idle", padding=(8, 6))
+        self._status_label.pack(fill="x")
+
+        log_row = ttk.Frame(self, padding=(8, 0))
+        log_row.pack(fill="both", expand=True)
+        self._log_text = tk.Text(log_row, height=12, state="disabled", wrap="word", takefocus=0)
+        scrollbar = ttk.Scrollbar(log_row, orient="vertical", command=self._log_text.yview)
+        self._log_text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self._log_text.pack(side="left", fill="both", expand=True)
+
+        self._log("[gui] ready")
+        self.bind("<KeyPress>", self._on_key)
+        self._log_text.bind("<KeyPress>", self._on_key)
+
+    def _dispatch(self, action: str) -> None:
+        """Button entry point: every MAIN_ACTIONS button carries its own action name."""
+        if action == "doctor":
+            self.doctor()
+        elif action == "scan":
+            self.scan()
+        elif action == "fix":
+            self.fix()
+        elif action == "play":
+            self.play()
+
+    def _log(self, message: str) -> None:
+        append_log(self._log_text, [f"{message}\n"])
+
+    def _set_status(self, text: str) -> None:
+        self._status_label.configure(text=text)
+
+    def _update_buttons(self) -> None:
+        for action, button in self._buttons.items():
+            stoppable = action == "play" and self._action == "play"
+            button.configure(state="normal" if stoppable or not self._busy else "disabled")
+
+    def _set_hotkeys_visible(self, visible: bool) -> None:
+        if visible:
+            self._hotkey_row.pack(fill="x", padx=8)
+        else:
+            self._hotkey_row.pack_forget()
+
+    def _push_key(self, key: str) -> None:
+        """Queue one play hotkey; mpv holds the focus, so buttons feed the key source."""
+        self._keys.push(key)
+
+    def _on_key(self, event: tk.Event) -> str | None:
+        """Match keysym, never event.char: a non-US layout reports jamo for [ and ]."""
+        key = HOTKEYS_BY_KEYSYM.get(event.keysym)
+        if key is None:
+            return None
+        self._keys.push(key)
+        return "break"
+
+    def _reset_keys(self) -> None:
+        """Drop queued keys so a stale q cannot stop the next play instantly."""
+        while self._keys.poll():
+            pass
+
+    def refresh_track(self) -> None:
+        try:
+            self._state = SpotifyBridge().current()
+        except RuntimeError as exc:
+            self._state = None
+            self._log(str(exc))
+        state = self._state
+        self._track_label.configure(
+            text=(
+                "no Spotify session"
+                if state is None
+                else f"{state.artist} - {state.title} ({format_length(state.duration_s)})"
+            )
+        )
+
+    def _run(self, action: str, worker: Callable[[], int]) -> None:
+        """Run one operation on a worker thread, capturing stdout into the log pane."""
+        if self._busy:
+            self._log("[gui] another operation is already running")
+            return
+        self._busy = True
+        self._action = action
+        self._sink = LogSink()
+        sink = self._sink
+        self._update_buttons()
+        self._set_status(f"{action} running...")
+        if action == "play":
+            self._set_hotkeys_visible(True)
+
+        def body() -> None:
+            with contextlib.redirect_stdout(sink):
+                try:
+                    rc = worker()
+                except Exception as exc:  # noqa: BLE001 - the GUI reports, never raises
+                    print(f"[gui] {action} failed: {exc}")
+                    rc = 1
+            if self._closing:
+                return
+            with contextlib.suppress(tk.TclError, RuntimeError):  # root gone, or no main loop
+                self.after(0, self._run_finished, action, rc)
+
+        self._worker = threading.Thread(target=body, daemon=True)
+        self._worker.start()
+
+    def _run_finished(self, action: str, rc: int) -> None:
+        if self._closing:
+            return
+        if self._sink is not None:
+            append_log(self._log_text, self._sink.drain())
+        self._log(f"[gui] {action} finished")
+        if rc:
+            self._log(f"[gui] {action} exited with code {rc}")
+        self._busy = False
+        self._action = None
+        self._set_hotkeys_visible(False)
+        self._update_buttons()
+        self._set_status("idle")
+        if action == "scan":
+            self.refresh_track()
+
+    def play(self) -> None:
+        """Start the follow loop, or stop the running one (the Play button is Stop)."""
+        if self._action == "play":
+            self._keys.push("q")
+            return
+        self._reset_keys()
+        self._run("play", self._play_worker)
+
+    def _play_worker(self) -> int:
+        from mvsync import sync_runtime
+
+        return sync_runtime.run_play(None, root=self._root_dir, keys=self._keys.poll)
+
+    def scan(self) -> None:
+        self._run("scan", self._scan_worker)
+
+    def use_url(self) -> None:
+        if not self._url_var.get().strip():
+            self._log("[gui] type a youtube url first")
+            return
+        self._run("scan", self._scan_worker)
+
+    def _scan_worker(self) -> int:
+        try:
+            candidates = self._scan_candidates()
+        except (ValueError, RuntimeError) as exc:
+            print(f"[scan] aborted: {exc}")
+            return 1
+        result = scan_with_candidates(candidates, root=self._root_dir)
+        print(f"[scan] saved {result.path.name} for {result.video_id}")
+        return 0
+
+    def _scan_candidates(self) -> list[Candidate]:
+        """The candidates a scan records against: the typed url, else a fresh search."""
+        url = self._url_var.get().strip()
+        if url:
+            return [
+                Candidate(video_id=parse_video_id(url), title="", duration_s=None, channel="")
+            ]
+        state = self._state
+        if state is None:
+            raise RuntimeError("no Spotify session; open the desktop app and start the track")
+        return pick_mv_candidates(state.artist, state.title, state.duration_s, root=self._root_dir)
+
+    def doctor(self) -> None:
+        self._run("doctor", self._doctor_worker)
+
+    def _doctor_worker(self) -> int:
+        from mvsync.cli import doctor
+
+        return doctor()
+
+    def fix(self) -> None:
+        """Open the picker in its own process: a second Tk root in a thread hangs."""
+        self._run("fix", self._fix_worker)
+
+    def _fix_worker(self) -> int:
+        return subprocess.Popen([sys.executable, *FIX_COMMAND]).wait()
+
+    def _on_close(self) -> None:
+        if self._busy and not messagebox.askyesno(
+            "mvsync",
+            f"A {self._action or 'session'} is running; closing now stops it. Close anyway?",
+        ):
+            return
+        self._closing = True
+        if self._action == "play":
+            self._stop_play()
+        self.destroy()
+
+    def _stop_play(self) -> None:
+        """Ask the follow loop to quit and wait for its mpv and session cleanup."""
+        self._keys.push("q")
+        if self._worker is not None:
+            self._worker.join(timeout=CLOSE_STOP_TIMEOUT_S)
 
 
 class FixerWindow(tk.Tk):
@@ -260,6 +531,13 @@ class FixerWindow(tk.Tk):
         ):
             return
         self.destroy()
+
+
+def run_gui(root: Path | None = None) -> int:
+    """Open the main window and run its mainloop."""
+    window = MainWindow(root=root)
+    window.mainloop()
+    return 0
 
 
 def run_fixer(*, root: Path | None = None) -> int:
