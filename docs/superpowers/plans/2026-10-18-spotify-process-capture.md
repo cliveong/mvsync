@@ -1,4 +1,4 @@
-# Spotify-Only Capture Implementation Plan
+﻿# Spotify-Only Capture Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -29,7 +29,7 @@ Failure modes most likely to bite a real user, most likely first; each has a tes
 1. **Spotify has no audio session when recording starts** (app closed, or paused with no render stream). PID lookup returns nothing. The recording must be discarded, never saved as a silent map, and never raise out of `radio.start()` into the play loop (Task 3 factory test, Task 4 discard test).
 2. **Spotify restarts mid-listen**, so the captured PID dies and the stream goes silent. The existing `SILENT_PEAK_DBFS` discard branch (`radio.py:159-162`) is the net, but it currently has **no test anywhere in the suite**; Task 4 adds one while wiring the new failure path, so this behaviour gains coverage instead of relying on a reviewer's memory.
 3. **COM apartment conflict on import.** `comtypes` initializes STA at import and raises `RPC_E_CHANGED_MODE` if the thread is already MTA. `soundcard` imports lazily inside `default_loopback()` (`capture.py:24`), so the apartment only becomes MTA after a real device query. `sys.coinit_flags = 0` must therefore be set before *any* comtypes import and `capture_proc` must be imported before the first `default_loopback()` call. Task 3 Step 4 pins the import placement and Task 2 Step 6 proves it on this machine.
-4. **`GetMixFormat` returns `E_NOTIMPL` on the virtual device and pycaw's `WAVEFORMATEX` corrupts a constructed format** (it types `nSamplesPerSec` as 16-bit, giving `E_INVALIDARG`). Our own 18-byte `_pack_ = 1` struct must be asserted by a test (Task 2 test). The same class of bug applies to `PROPVARIANT`, which must be 16 bytes on x64 with an 8-aligned union and a packed inner blob; Task 2 asserts that size too.
+4. **`GetMixFormat` returns `E_NOTIMPL` on the virtual device and pycaw's `WAVEFORMATEX` corrupts a constructed format** (it types `nSamplesPerSec` as 16-bit, giving `E_INVALIDARG`). Our own 18-byte `_pack_ = 1` struct must be asserted by a test (Task 2 test). The same class of bug applies to `PROPVARIANT`, which is 24 bytes on x64 (8-byte header plus a naturally aligned 16-byte BLOB union); Task 2 asserts that size too.
 5. **First-listen recordings begin mid-song**, so `ready_epoch` must mark the first received packet, not activation time, or `offset_s` at `radio.py:136` silently shifts by the activation latency. This belongs to `ProcessLoopbackRecorder` (Task 2), proven by the Task 2 spike rather than a unit test.
 
 ---
@@ -60,7 +60,7 @@ def test_sink_writes_pcm_s16_from_float_blocks(tmp_path):
         assert handle.getnframes() == 2
         assert handle.readframes(2) == b"".join(
             int(v * 32767).to_bytes(2, "little", signed=True)
-            for v in (0.0, 32767.0, -32767.0, 16383.5)
+            for v in (0.0, 1.0, -1.0, 0.5)
         )
 
 
@@ -174,7 +174,7 @@ def test_process_structs_have_the_win32_layout():
 
     assert ctypes.sizeof(capture_proc.WAVEFORMATEX) == 18
     assert ctypes.sizeof(capture_proc.AUDIOCLIENT_ACTIVATION_PARAMS) == 12
-    assert ctypes.sizeof(capture_proc.PROPVARIANT) == 16
+    assert ctypes.sizeof(capture_proc.PROPVARIANT) == 24
 
 
 def test_process_recorder_keeps_its_pid():
@@ -201,7 +201,7 @@ Then declare, in order:
 
 - A correct 18-byte `_pack_ = 1` `WAVEFORMATEX` (7 fields: `wFormatTag`, `nChannels`, `nSamplesPerSec`, `nAvgBytesPerSec`, `nBlockAlign`, `wBitsPerSample`, `cbSize`). Do not use pycaw's.
 - `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS` (`TargetProcessId`, `ProcessLoopbackMode`) and `AUDIOCLIENT_ACTIVATION_PARAMS` (`ActivationType`, `ProcessLoopbackParams`).
-- A minimal `PROPVARIANT` sized **16 bytes on x64**, with an 8-byte-aligned union and a `_pack_ = 1` inner `_BLOB` (`cbSize`, `pBlobData`). Get this wrong and the blob pointer lands misaligned, which surfaces as `E_INVALIDARG` or garbage from `ActivateAudioInterfaceAsync`. The Step 2 test pins the size.
+- A native `PROPVARIANT` of **24 bytes on x64**: an 8-byte header (`vt` plus three reserved WORDs) followed by a 16-byte `BLOB` union (`ULONG cbSize`, 4 bytes of natural padding, then an 8-byte `pBlobData`). Do NOT pack the outer struct and do NOT type `pBlobData` as a 32-bit int: on x64 the OS reads it at offset 16 with 8-byte alignment. Use this one struct for both the live call and the size test. A 16-byte or packed variant is a silent out-of-bounds read.
 - COM interfaces pycaw omits, with these IIDs and vtables:
   - `IAgileObject` `{94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90}`, no methods.
   - `IActivateAudioInterfaceAsyncOperation` `{72A22D78-CDE4-431D-B8CC-843A71199B6D}`, method `GetActivateResult(HRESULT* out, IUnknown** activated)`.
@@ -555,3 +555,5 @@ git commit -m "Document Spotify-only capture"
 - Task 4 Step 2 is expected to fail on the first run: repointing the monkeypatch without switching production code breaks the fakes. The failure lands in microseconds rather than after the 3 s grace, because `test_scan_runtime.py` replaces `scan_runtime.time` with a `StepClock` (lines 293, 391), so `_wait_until`'s grace at `scan_runtime.py:151` is measured in fake time. That is the red state for Step 3; do not restore the old monkeypatch.
 - `capture.py` has no direct unit tests today. Task 1 adds the first, which is why the `PcmSink` refactor is sequenced before any new backend.
 - Five details in Task 2 are each individually capable of failing confusingly: the `sys.coinit_flags` ordering, `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE = 0`, the six-argument `Initialize` with two zero durations, pycaw's corrupt `WAVEFORMATEX`, and the x64 `PROPVARIANT` alignment. The struct-size tests in Task 2 Step 2 pin the last two.
+
+
