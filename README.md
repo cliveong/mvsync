@@ -103,7 +103,8 @@ search favors the track artist's own video, so wrong picks get rarer and
 this window fixes what still slips through. It opens in a separate process,
 because Tk cannot open a second window from another thread, so the log pane
 keeps updating while the picker is up. The other buttons stay greyed out until
-it closes.
+it closes. The picker's `Back` button (or its close box) returns to the main
+window; after a successful fix it asks whether to go back right away.
 
 ### Pausing and skipping
 
@@ -117,13 +118,18 @@ During a play session:
   and resumes with you; the track simply gets another chance on its next
   uninterrupted listen.
 - Skipping to another track (next, previous, or any jump) is handled like a
-  natural track change: the video swaps immediately to the new track, synced
-  if it is known, rough plus a new recording if it is not. Skipping away from
-  a song that was being first-listen recorded discards that partial recording.
+  natural track change: the old video freezes while the new track's MV is
+  resolved in the background, then the new video swaps in and seeks to the
+  current position (synced if it is known, rough plus a new recording if it
+  is not). A first listen's YouTube search can take a few seconds; the video
+  stays frozen during that wait instead of showing the previous song's MV.
 - Restarting the current song (a seek) is fine on a scanned track, the video
   hard-seeks back to match. On a first listen the video follows your seek
   roughly (it jumps by the same delta) while that song's recording is
   discarded, same as a pause.
+- The mpv window keeps the size and fullscreen state you gave it when the MV
+  changes. A differently shaped video letterboxes inside the same window
+  instead of resizing it.
 
 During a scan, any pause, seek, or skip aborts the scan cleanly and nothing
 is saved.
@@ -185,6 +191,12 @@ The capture mode is not a generated file: `data/config.json` is an optional
 override you create by hand. Without it the default is
 `{"capture_mode": "spotify"}`; write `{"capture_mode": "device"}` to force
 whole-mix loopback capture. A missing or unusable file keeps the default.
+
+The developer log is the other optional key, for debugging a session:
+`{"dev_log": true}` in the same file, or set `MVSYNC_DEV_LOG=1`. It writes one
+JSON-lines file per run under `data/logs/` (raw Spotify positions, planner
+decisions, and search/download/swap timings). It is off by default; delete the
+files whenever you like.
 
 The window only reads `session.lock`: it greys out its buttons when another live
 session holds it, and never writes or steals the file itself.
@@ -268,7 +280,7 @@ src/mvsync/    Python package (pure logic separated from IO adapters)
 tests/         pytest suite for the pure modules (DSP tests marked `dsp`)
 spikes/        M0 measurement scripts (SMTC cadence, mpv IPC, loopback, PCM)
 tools/         portable mpv, yt-dlp, and the project-local mpv config
-data/          generated: cache, recordings, alignments; config.json is an optional override (see above)
+data/          generated: cache, recordings, alignments, logs; config.json is an optional override (see above)
 ```
 
 ## Status

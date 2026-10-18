@@ -37,7 +37,7 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
   `timeline`, `align_store`, `sync_planner`, `mv_search` scoring.
 - IO adapters and runtimes: `spotify_smtc`, `capture`, `capture_proc`, `config`,
   `mpv_ctl`, `mv_audio`, `sync_runtime`, `scan_runtime`, `radio`, `session`,
-  `paths`, `gui`, `gui_console`.
+  `paths`, `devlog`, `gui`, `gui_console`.
 
 ## Invariants (each one cost a debugging session to learn)
 
@@ -67,9 +67,21 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
 - When the MV is shorter than the track, it must hold its last frame while the
   music continues: mpv runs with `keep_open=True`, and rough mode keeps the
   video paused on `eof_reached` rather than unpausing a finished video.
+- A track change never blocks the follow loop on the YouTube search or the MV
+  download. `_begin_track` freezes the previous video and starts the first-listen
+  recording immediately; a `TrackPrep` worker resolves the video, and
+  `_apply_prepared` swaps it in on the loop thread, seeking to the current
+  position. A pending prep is cancelled when the track changes again, and a
+  failed prep leaves the loop frozen without ending playback. The first listen
+  can still start mid-song because the search takes seconds; that is expected.
+- The mpv window keeps the geometry the user gave it across video swaps:
+  `auto_window_resize=False`, and `_swap_video` restores `fullscreen` after the
+  load. A differently shaped MV letterboxes inside the same window.
 - First-listen recordings are deleted once their fit saves a map and after
   every `scan` (success or abort); a failed fit keeps the wav so the listen
-  can be refitted by hand. Interrupted listens (pause over 2 s, seek) are
+  can be refitted by hand. A first-listen recording starts before the MV search
+  under `pending__<track_id>.wav` and is renamed to `<video_id>__<track_id>.wav`
+  once the search picks a video. Interrupted listens (pause over 2 s, seek) are
   discarded.
 - A first-listen recording is trusted only when wall time and captured audio
   agree (`MAX_CAPTURE_LOSS_S`) and `RadioWatch` saw no pause over 2 s or seek.
@@ -88,8 +100,8 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
   app never writes it. `data/` is generated otherwise: deleting `cache` is safe,
   deleting `alignments` loses sync maps.
 - Console output is English, prefixed `[scan]`, `[play]`, `[search]`,
-  `[capture]`, `[doctor]`, and `[gui]` for the window's own lines (which the
-  GUI's log pane shows beside the captured ones).
+  `[capture]`, `[doctor]`, `[log]`, and `[gui]` for the window's own lines
+  (which the GUI's log pane shows beside the captured ones).
 - One session at a time is enforced by `data/session.lock` (pid-based, stale
   locks are stolen). `play`, `scan`, and `fix` all claim it. `session.claim` is
   the only writer of that file, and `session.lock_holder` is the strictly
@@ -105,6 +117,11 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
   worker and `redirect_stdout` into a `LogSink`, pumped back with `after`).
   `MainWindow` is the single Tk root: a second one created in a worker thread
   hangs, which is why `Fix MV` launches `mvsync fix` as a separate process.
+- The developer log is opt-in (`dev_log` in `data/config.json` or
+  `MVSYNC_DEV_LOG=1`, the env var winning) and writes one JSON-lines file per
+  run under `data/logs/`. `devlog.log` must stay a cheap no-op when disabled,
+  never raise, and never log secrets (it logs track metadata, paths, positions,
+  and timings only). It is for debugging, not a user-facing feature.
 - A track has one authoritative map: `scan`/`fix` saving a map prunes other
   maps with the same track id (`prune_other_alignments`); `play` falls back to
   the newest by mtime (`load_newest_alignment`).
