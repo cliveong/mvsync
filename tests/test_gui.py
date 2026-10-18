@@ -146,6 +146,39 @@ def test_cli_parses_the_fix_command():
     assert _build_parser().parse_args(["fix"]).command == "fix"
 
 
+def test_cli_parses_the_gui_and_menu_commands():
+    from mvsync.cli import _build_parser
+
+    assert _build_parser().parse_args(["gui"]).command == "gui"
+    assert _build_parser().parse_args(["menu"]).command == "menu"
+
+
+def test_no_arguments_launches_the_gui(monkeypatch):
+    from mvsync import cli, gui
+
+    calls = []
+    monkeypatch.setattr(gui, "run_gui", lambda *a, **k: calls.append(True) or 0)
+    assert cli.main([]) == 0
+    assert calls == [True]
+
+
+def test_the_gui_command_launches_the_gui(monkeypatch):
+    from mvsync import cli, gui
+
+    calls = []
+    monkeypatch.setattr(gui, "run_gui", lambda *a, **k: calls.append(True) or 0)
+    assert cli.main(["gui"]) == 0
+    assert calls == [True]
+
+
+def test_the_menu_command_still_opens_the_console_menu(monkeypatch):
+    from mvsync import cli, gui
+
+    monkeypatch.setattr(gui, "run_gui", lambda *a, **k: pytest.fail("gui must not open"))
+    monkeypatch.setattr(cli, "menu", lambda: 0)
+    assert cli.main(["menu"]) == 0
+
+
 def test_main_window_actions_map_to_the_documented_commands():
     from mvsync.gui import MAIN_ACTIONS
 

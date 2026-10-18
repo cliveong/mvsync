@@ -1,7 +1,7 @@
-"""Command-line entry point: doctor, scan, play, interactive menu.
+"""Command-line entry point: the main window, doctor, scan, play, fix, menu.
 
-Heavy imports (winsdk, soundcard, librosa, the runtimes) happen lazily so the
-menu and ``--help`` stay fast.
+Heavy imports (winsdk, soundcard, librosa, tkinter, the runtimes) happen lazily
+so ``--help`` stays fast.
 """
 
 from __future__ import annotations
@@ -84,6 +84,12 @@ def _play(url: str, pick: int | None = None) -> int:
     return run_play(url or None, pick=pick)
 
 
+def _gui() -> int:
+    from mvsync.gui import run_gui
+
+    return run_gui()
+
+
 def _fix() -> int:
     from mvsync.gui import run_fixer
 
@@ -141,6 +147,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Watch a muted YouTube music video in mpv, synced to lossless Spotify.",
     )
     subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("gui", help="open the main window (the default with no arguments)")
+    subparsers.add_parser("menu", help="open the old console menu")
     subparsers.add_parser("doctor", help="check environment, devices, and Spotify session")
     scan = subparsers.add_parser("scan", help="scan the current Spotify track (auto-finds its MV)")
     scan.add_argument("url", nargs="?", help="youtube url; omit to find the MV automatically")
@@ -172,11 +180,15 @@ def main(argv: list[str] | None = None) -> int:
     _safe_console()
     args_list = list(sys.argv[1:] if argv is None else argv)
     if not args_list:
-        return menu()
+        return _gui()
 
     parser = _build_parser()
     args = parser.parse_args(args_list)
     try:
+        if args.command == "gui":
+            return _gui()
+        if args.command == "menu":
+            return menu()
         if args.command == "doctor":
             return doctor()
         if args.command == "scan":

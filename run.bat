@@ -37,7 +37,7 @@ if errorlevel 1 (
 set "PYTHONPATH=%~dp0src"
 "%~dp0.venv\Scripts\python.exe" -m mvsync %*
 set "RC=%ERRORLEVEL%"
-if "%~1"=="" pause
+if not "%RC%"=="0" pause
 exit /b %RC%
 
 :bootstrap_only
