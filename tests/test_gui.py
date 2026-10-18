@@ -1,3 +1,7 @@
+import json
+import os
+import subprocess
+import sys
 from functools import partial
 
 import pytest
@@ -177,6 +181,58 @@ def test_the_menu_command_still_opens_the_console_menu(monkeypatch):
     monkeypatch.setattr(gui, "run_gui", lambda *a, **k: pytest.fail("gui must not open"))
     monkeypatch.setattr(cli, "menu", lambda: 0)
     assert cli.main(["menu"]) == 0
+
+
+# cli.py's docstring promises the heavy imports stay lazy so --help stays fast. The
+# probe runs in a fresh interpreter, because this pytest process has already
+# imported most of these for other tests. It only imports and reports; the guard
+# keeps anything the probe touches from opening a window.
+LAZY_IMPORT_PROBE = """
+import json
+import sys
+
+import mvsync.cli
+
+mvsync.cli.main = lambda *a, **k: None
+
+watched = [
+    "winsdk",
+    "soundcard",
+    "librosa",
+    "tkinter",
+    "mvsync.gui",
+    "mvsync.sync_runtime",
+    "mvsync.scan_runtime",
+    "mvsync.capture",
+    "mvsync.spotify_smtc",
+]
+loaded = [
+    name
+    for name in sorted(sys.modules)
+    if any(name == root or name.startswith(root + ".") for root in watched)
+]
+print(json.dumps(loaded))
+"""
+
+
+def test_importing_the_cli_pulls_in_no_heavy_module():
+    from mvsync import paths
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(paths.src_dir())
+    finished = subprocess.run(
+        [sys.executable, "-c", LAZY_IMPORT_PROBE],
+        capture_output=True,
+        text=True,
+        cwd=paths.project_root(),
+        env=env,
+        timeout=60,
+        check=False,
+    )
+
+    assert finished.returncode == 0, finished.stderr
+    # Last line is the probe's own print, whatever else an import may have said.
+    assert json.loads(finished.stdout.strip().splitlines()[-1]) == []
 
 
 def test_main_window_actions_map_to_the_documented_commands():
