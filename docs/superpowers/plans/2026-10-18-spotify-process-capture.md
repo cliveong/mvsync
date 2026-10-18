@@ -520,9 +520,9 @@ git commit -m "Report the active capture backend in doctor"
 
 - [ ] **Step 1: Update the README**
 
-Replace the limitation bullet "The loopback records everything the default output device plays, so keep notifications, games, and other apps quiet during a first listen or scan." with a description of Spotify-only capture, the `data/config.json` switch (`{"capture.mode": "device"}` restores whole-mix capture), the automatic fallback, and the `comtypes`/`pycaw` dependency note. Add `data/config.json` to the "What lands on disk" tree and mention the capture line in the Doctor section.
+Replace the limitation bullet "The loopback records everything the default output device plays, so keep notifications, games, and other apps quiet during a first listen or scan." with a description of Spotify-only capture, the optional `data/config.json` override (`{"capture_mode": "device"}` restores whole-mix capture), the automatic fallback, and the `comtypes`/`pycaw` dependency note. Mention `data/config.json` as an optional hand-written override in the "What lands on disk" section and mention the capture line in the Doctor section.
 
-Also correct the now-false bullet at README.md:178-182, which claims Spotify "must play through the default output device (the loopback records that device)" and that switching devices with Spotify Connect voids a first listen. With the process backend that is no longer true: capture follows the Spotify process regardless of output device. Keep the Spotify Connect caveat only for `capture.mode = "device"`.
+Also correct the now-false bullet at README.md:178-182, which claims Spotify "must play through the default output device (the loopback records that device)" and that switching devices with Spotify Connect voids a first listen. With the process backend that is no longer true: capture follows the Spotify process regardless of output device. Keep the Spotify Connect caveat only for `capture_mode = "device"`.
 
 - [ ] **Step 2: Update AGENTS.md**
 
