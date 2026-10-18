@@ -128,6 +128,25 @@ def test_rank_prefers_track_artist_remake_mv_over_original_artist_mv():
     assert ranked[0].video_id == "VVO05mYGFY8"
 
 
+def test_score_title_bonus_needs_whole_words():
+    from mvsync.mv_search import _score
+
+    incidental = Candidate("other", "TAEYEON 태연 'INVU' MV", 218.0, "SMTOWN")
+    true_match = Candidate("real", "TAEYEON 태연 'I (feat. Verbal Jint)' MV", 218.0, "SMTOWN")
+    assert (
+        _score(true_match, 206.0, "TAEYEON", "I")
+        == _score(incidental, 206.0, "TAEYEON", "I") + 2.0
+    )
+
+
+def test_score_title_bonus_supports_korean_titles():
+    from mvsync.mv_search import _score
+
+    match = Candidate("kr", "TAEYEON 태연 '사계 (Four Seasons)' MV", 218.0, "SMTOWN")
+    miss = Candidate("no", "TAEYEON 태연 'INVU' MV", 218.0, "SMTOWN")
+    assert _score(match, 218.0, "TAEYEON", "사계") > _score(miss, 218.0, "TAEYEON", "사계")
+
+
 def test_score_gives_the_official_mv_phrase_bonus_once():
     from mvsync.mv_search import _score
 

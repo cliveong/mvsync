@@ -116,10 +116,15 @@ def _has_word(text: str, word: str) -> bool:
     return re.search(rf"\b{re.escape(word)}\b", text) is not None
 
 
+def _tokens(text: str) -> set[str]:
+    return set(re.findall(r"\w+", text.lower()))
+
+
 def _score(candidate: Candidate, track_duration_s: float, artist: str, title: str) -> float:
     text = candidate.title.lower()
     score = 0.0
-    if title.strip() and title.lower() in text:
+    title_tokens = _tokens(title)
+    if title_tokens and title_tokens <= _tokens(text):
         score += 2.0
     if artist.strip() and artist.lower() in text:
         score += ARTIST_TITLE_BONUS
