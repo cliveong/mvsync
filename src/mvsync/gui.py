@@ -13,7 +13,7 @@ from functools import partial
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from mvsync import paths, session
+from mvsync import devlog, paths, session
 from mvsync.align_store import load_newest_alignment, make_track_id
 from mvsync.gui_console import KeySource, LogSink
 from mvsync.mv_audio import parse_video_id
@@ -108,6 +108,9 @@ class MainWindow(tk.Tk):
         self._buttons: dict[str, ttk.Button] = {}
         self._key_consumers: tuple[tk.Misc, ...] = ()
         self._build_ui()
+        log_path = devlog.configure(root)
+        if log_path is not None:
+            self._log(f"[log] writing {log_path}")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self.refresh_track)
 
@@ -396,7 +399,7 @@ class FixerWindow(tk.Tk):
 
     def __init__(self, root: Path | None = None) -> None:
         super().__init__()
-        self.title("mvsync")
+        self.title("mvsync - Fix MV")
         self._root_dir = root
         self._state: SpotifyState | None = None
         self._track_id: str | None = None
@@ -404,6 +407,9 @@ class FixerWindow(tk.Tk):
         self._in_use_video_id: str | None = None
         self._busy = False
         self._build_ui()
+        log_path = devlog.configure(root)
+        if log_path is not None:
+            self._log(f"[log] writing {log_path}")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.refresh_track()
 
@@ -448,6 +454,7 @@ class FixerWindow(tk.Tk):
         self._copy_button.pack(side="left", padx=4)
         self._use_button = ttk.Button(bottom, text="Use this MV", command=self.use_selected)
         self._use_button.pack(side="left")
+        ttk.Button(bottom, text="Back", command=self.back).pack(side="right")
         self._status_label = ttk.Label(bottom, text="")
         self._status_label.pack(side="left", padx=8)
 
@@ -599,14 +606,20 @@ class FixerWindow(tk.Tk):
         threading.Thread(target=work, daemon=True).start()
 
     def _use_done(self, result: ScanResult) -> None:
-        messagebox.showinfo("mvsync", f"Saved a new map: {result.video_id}")
         self._set_busy(False)
         self.refresh_track()
+        messagebox.showinfo("mvsync", f"Saved a new map: {result.video_id}")
+        if messagebox.askyesno("mvsync", "Back to the main window?"):
+            self.back()
 
     def _use_failed(self, message: str) -> None:
         self._log(message)
         self._set_busy(False)
         messagebox.showerror("mvsync", message)
+
+    def back(self) -> None:
+        """Leave the picker; the main window's Fix worker finishes when this closes."""
+        self._on_close()
 
     def _on_close(self) -> None:
         if self._busy and not messagebox.askyesno(

@@ -803,3 +803,67 @@ def test_the_close_prompt_only_promises_to_stop_a_running_play():
     assert "stops it" not in close_question("fix")
     assert "picker" in close_question("fix")
     assert "stops it" not in close_question(None)
+
+
+class StandInFixer:
+    """Only the attributes the fixer methods under test read."""
+
+    def __init__(self):
+        self.busy = True
+        self.refreshed = 0
+        self.back_calls = 0
+        self.closed = False
+
+    def _set_busy(self, value):
+        self.busy = value
+
+    def refresh_track(self):
+        self.refreshed += 1
+
+    def back(self):
+        self.back_calls += 1
+
+    def _on_close(self):
+        self.closed = True
+
+
+def test_the_fix_window_back_uses_the_close_confirmation():
+    from mvsync.gui import FixerWindow
+
+    window = StandInFixer()
+    FixerWindow.back(window)
+    assert window.closed is True
+
+
+def test_a_successful_fix_offers_to_go_back(monkeypatch):
+    from pathlib import Path
+
+    from mvsync import gui
+    from mvsync.scan_runtime import ScanResult
+
+    window = StandInFixer()
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *args, **kwargs: True)
+
+    gui.FixerWindow._use_done(window, ScanResult(path=Path("m.json"), video_id="v"))
+
+    assert window.busy is False
+    assert window.back_calls == 1
+    assert window.refreshed == 1
+
+
+def test_declining_the_way_back_keeps_the_fixer_open(monkeypatch):
+    from pathlib import Path
+
+    from mvsync import gui
+    from mvsync.scan_runtime import ScanResult
+
+    window = StandInFixer()
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *args, **kwargs: False)
+
+    gui.FixerWindow._use_done(window, ScanResult(path=Path("m.json"), video_id="v"))
+
+    assert window.busy is False
+    assert window.back_calls == 0
+    assert window.refreshed == 1
