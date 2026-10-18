@@ -18,7 +18,7 @@ from pathlib import Path
 
 from mvsync import paths
 from mvsync.align_store import save_alignment
-from mvsync.capture import SILENT_PEAK_DBFS, LoopbackRecorder
+from mvsync.capture import SILENT_PEAK_DBFS, make_recorder
 from mvsync.match import (
     BACKWARD_JUMP_S,
     END_EPS_S,
@@ -103,6 +103,7 @@ class RadioRecording:
         title: str,
         track_duration_s: float,
         root: Path | None,
+        capture_mode: str | None = None,
     ) -> None:
         self._rec_path = rec_path
         self._candidates = candidates
@@ -111,7 +112,8 @@ class RadioRecording:
         self._title = title
         self._track_duration_s = track_duration_s
         self._root = root
-        self._recorder = LoopbackRecorder(rec_path)
+        self._capture_mode = capture_mode
+        self._recorder = None
         self._watch = RadioWatch(track_duration_s)
         self._offset_s = 0.0
         self._start_wall = 0.0
@@ -125,6 +127,14 @@ class RadioRecording:
         return self._started
 
     def start(self, *, position_s: float, wall: float) -> None:
+        try:
+            self._recorder = make_recorder(
+                self._rec_path, root=self._root, mode=self._capture_mode
+            )
+        except RuntimeError as exc:
+            self._recorder = None
+            print(f"[play] cannot record this listen: {exc}")
+            return
         self._started = True
         self._start_wall = wall
         self._recorder.start()

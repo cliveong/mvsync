@@ -294,8 +294,8 @@ def run_scan(monkeypatch, tmp_path, *, align, fetch=None):
     monkeypatch.setattr(scan_runtime, "SpotifyBridge", lambda: bridge)
     monkeypatch.setattr(
         scan_runtime,
-        "LoopbackRecorder",
-        lambda path: FakeRecorder(path, clock),
+        "make_recorder",
+        lambda path, *, root=None, mode=None: FakeRecorder(path, clock),
     )
     monkeypatch.setattr(scan_runtime, "wav_duration_s", lambda path: DURATION)
     monkeypatch.setattr(scan_runtime, "align_against_candidates", align)
@@ -333,8 +333,10 @@ def test_scan_aborts_on_blank_metadata(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(scan_runtime, "SpotifyBridge", lambda: BlankBridge())
     monkeypatch.setattr(
         scan_runtime,
-        "LoopbackRecorder",
-        lambda path: (_ for _ in ()).throw(RuntimeError("recorder should not start")),
+        "make_recorder",
+        lambda path, *, root=None, mode=None: (_ for _ in ()).throw(
+            RuntimeError("recorder should not start")
+        ),
     )
     monkeypatch.setattr(builtins, "input", lambda prompt="": "")
 
@@ -390,7 +392,11 @@ def run_scan_with_candidates(monkeypatch, tmp_path, *, align, fetch=None, candid
     FakeRecorder.instances = []
     monkeypatch.setattr("mvsync.scan_runtime.time", clock)
     monkeypatch.setattr(scan_runtime, "SpotifyBridge", lambda: bridge)
-    monkeypatch.setattr(scan_runtime, "LoopbackRecorder", lambda path: FakeRecorder(path, clock))
+    monkeypatch.setattr(
+        scan_runtime,
+        "make_recorder",
+        lambda path, *, root=None, mode=None: FakeRecorder(path, clock),
+    )
     monkeypatch.setattr(scan_runtime, "wav_duration_s", lambda path: DURATION)
     monkeypatch.setattr(scan_runtime, "align_against_candidates", align)
     video_file = tmp_path / "vid.mp4"

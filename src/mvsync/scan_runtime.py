@@ -17,14 +17,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from mvsync import paths, session
+from mvsync import config, paths, session
 from mvsync.align_store import (
     alignment_path,
     make_track_id,
     prune_other_alignments,
     save_alignment,
 )
-from mvsync.capture import SILENT_PEAK_DBFS, LoopbackRecorder
+from mvsync.capture import SILENT_PEAK_DBFS, make_recorder
 from mvsync.clock import extrapolate
 from mvsync.match import BACKWARD_JUMP_S, END_EPS_S, FORWARD_JUMP_S, align_against_candidates
 from mvsync.mv_audio import fetch_video_mp4, parse_video_id, wav_duration_s
@@ -144,7 +144,10 @@ def _record_and_fit(
     """Record one listen of the track, fit it against the candidates, and save the map."""
     rec_path = paths.recordings_dir(root) / f"{candidates[0].video_id}__{track_id}.wav"
     print(f"[scan] recording to {rec_path.name}")
-    recorder = LoopbackRecorder(rec_path)
+    try:
+        recorder = make_recorder(rec_path, root=root)
+    except RuntimeError as exc:
+        raise ScanAborted(str(exc)) from exc
     try:
         recorder.start()
         on_progress("recording")
@@ -161,10 +164,11 @@ def _record_and_fit(
             recorder.stop()
 
         if recorder.peak_db < SILENT_PEAK_DBFS:
-            raise ScanAborted(
-                f"recording looks silent ({recorder.peak_db:.1f} dBFS peak); "
-                "check that Spotify plays through the default output device"
-            )
+            if config.load_capture_mode(root) == "spotify":
+                hint = "Spotify had no audio stream (app closed, or paused with nothing rendering)"
+            else:
+                hint = "check that Spotify plays through the default output device"
+            raise ScanAborted(f"recording looks silent ({recorder.peak_db:.1f} dBFS peak); {hint}")
 
         ready = recorder.ready_epoch if recorder.ready_epoch is not None else play_press
         wall_s = stop_wall - ready

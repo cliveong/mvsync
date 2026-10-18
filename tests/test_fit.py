@@ -1,3 +1,4 @@
+import time
 import wave
 from pathlib import Path
 
@@ -422,6 +423,63 @@ def test_radio_recording_ignores_observations_before_start(tmp_path):
     radio.observe(state, now=1010.0)
     radio.finish()
     assert not (tmp_path / "x.wav").exists()
+
+
+class SilentRecorder:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.peak_db = -90.0
+        self.ready_epoch = time.time()
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+
+def test_first_listen_discards_when_the_recorder_cannot_start(tmp_path, monkeypatch):
+    from mvsync import paths
+    from mvsync import radio as radio_module
+
+    rec_path = paths.ensure_dir(tmp_path / "rec") / "a.wav"
+    recording = radio_module.RadioRecording(
+        rec_path=rec_path,
+        candidates=[],
+        track_id="t",
+        artist="a",
+        title="t",
+        track_duration_s=100.0,
+        root=tmp_path,
+    )
+    monkeypatch.setattr(
+        radio_module,
+        "make_recorder",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no spotify process")),
+    )
+    recording.start(position_s=0.0, wall=time.time())
+    recording.finish()
+    assert not rec_path.exists()
+
+
+def test_first_listen_discards_a_silent_recording(tmp_path, monkeypatch):
+    from mvsync import paths
+    from mvsync import radio as radio_module
+
+    rec_path = paths.ensure_dir(tmp_path / "rec") / "a.wav"
+    recording = radio_module.RadioRecording(
+        rec_path=rec_path,
+        candidates=[],
+        track_id="t",
+        artist="a",
+        title="t",
+        track_duration_s=100.0,
+        root=tmp_path,
+    )
+    monkeypatch.setattr(radio_module, "make_recorder", lambda *a, **k: SilentRecorder(rec_path))
+    recording.start(position_s=0.0, wall=time.time())
+    recording.finish()
+    assert not rec_path.exists()
 
 
 def test_wait_for_fits_joins_pending_threads():
