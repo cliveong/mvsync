@@ -2,19 +2,22 @@
 
 ## What this is
 
-`mvsync`: a Windows-only CLI that plays a muted YouTube MV in mpv while the
+`mvsync`: a Windows-only app that plays a muted YouTube MV in mpv while the
 lossless Spotify desktop track stays the master clock. Spotify is observed and
 controlled through the Windows SMTC media session only: no Spotify API, no
 cookies, no account credentials in this repo. `scan` records one listen of the
 current track and builds a per-track alignment map (anchors plus skip spans);
 `play` follows playlists, reusing maps and background-recording first listens.
+`run.bat` with no arguments opens the Tk main window (`gui`), which drives the
+same runtimes; the subcommands and the old console `menu` still work.
 
 ## Commands (from the repo root)
 
 ```
-run.bat                         bootstrap (venv, tools) then interactive menu
+run.bat                         bootstrap (venv, tools) then the main window
 run.bat --check                 bootstrap status only
-run.bat play|scan|fix|doctor    normal entrypoints
+run.bat gui|menu                main window, or the old console menu
+run.bat play|scan|fix|doctor    normal entrypoints (unchanged by the GUI)
 .venv\Scripts\python.exe -m pytest                          # full suite
 .venv\Scripts\python.exe -m pytest tests/test_fit.py::test_session_claim_refuses_live_lock
 .venv\Scripts\python.exe -m pytest -m "not dsp"             # fast subset
@@ -33,7 +36,8 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
 - Pure logic, unit-testable with synthetic data: `clock`, `align`, `match`,
   `timeline`, `align_store`, `sync_planner`, `mv_search` scoring.
 - IO adapters and runtimes: `spotify_smtc`, `capture`, `mpv_ctl`, `mv_audio`,
-  `sync_runtime`, `scan_runtime`, `radio`, `session`, `paths`, `gui`.
+  `sync_runtime`, `scan_runtime`, `radio`, `session`, `paths`, `gui`,
+  `gui_console`.
 
 ## Invariants (each one cost a debugging session to learn)
 
@@ -73,9 +77,22 @@ resolves from `PATH` or `tools/ffmpeg/bin`.
   must stay movable). `data/` is generated: deleting `cache` is safe, deleting
   `alignments` loses sync maps.
 - Console output is English, prefixed `[scan]`, `[play]`, `[search]`,
-  `[doctor]`.
+  `[doctor]`, and `[gui]` for the window's own lines (which the GUI's log pane
+  shows beside the captured ones).
 - One session at a time is enforced by `data/session.lock` (pid-based, stale
-  locks are stolen). `play`, `scan`, and `fix` all claim it.
+  locks are stolen). `play`, `scan`, and `fix` all claim it. `session.claim` is
+  the only writer of that file, and `session.is_locked` is a strictly read-only
+  probe the GUI uses to grey out its buttons: it must never steal the lock, and
+  it excludes our own pid (`lock_holder`) so the window does not mistake its own
+  worker for an external session.
+- The play loop takes its hotkeys from an injected callable (`run_play(keys=...)`,
+  `KeySource.poll` from the window, `_read_key` from the console) and only reads
+  them once `_follow` is running, so keys pushed while a video is still
+  downloading are never seen.
+- Long GUI operations run off the Tk main thread (`MainWindow._run` starts a
+  worker and `redirect_stdout` into a `LogSink`, pumped back with `after`).
+  `MainWindow` is the single Tk root: a second one created in a worker thread
+  hangs, which is why `Fix MV` launches `mvsync fix` as a separate process.
 - A track has one authoritative map: `scan`/`fix` saving a map prunes other
   maps with the same track id (`prune_other_alignments`); `play` falls back to
   the newest by mtime (`load_newest_alignment`).
