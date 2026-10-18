@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mvsync import capture
+from mvsync import capture, config, paths
 
 
 def test_sink_writes_pcm_s16_from_float_blocks(tmp_path):
@@ -84,4 +84,44 @@ def test_process_recorder_keeps_its_pid():
     from mvsync import capture_proc
 
     recorder = capture_proc.ProcessLoopbackRecorder(Path("a.wav"), pid=4242)
+    assert recorder._pid == 4242
+
+
+def test_capture_mode_defaults_to_spotify(tmp_path):
+    assert config.load_capture_mode(tmp_path) == "spotify"
+
+
+def test_capture_mode_round_trips(tmp_path):
+    config.set_capture_mode("device", tmp_path)
+    assert config.load_capture_mode(tmp_path) == "device"
+
+
+def test_capture_mode_ignores_malformed_json(tmp_path):
+    paths.ensure_dir(tmp_path / "data")
+    (tmp_path / "data" / "config.json").write_text("{not json", encoding="utf-8")
+    assert config.load_capture_mode(tmp_path) == "spotify"
+
+
+def test_set_capture_mode_rejects_unknown_values(tmp_path):
+    with pytest.raises(ValueError):
+        config.set_capture_mode("stereo", tmp_path)
+
+
+def test_make_recorder_falls_back_when_spotify_is_missing(tmp_path, capsys, monkeypatch):
+    from mvsync import capture, capture_proc
+
+    monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
+    monkeypatch.setattr(capture_proc, "resolve_spotify_pid", lambda: None)
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
+    assert isinstance(recorder, capture.LoopbackRecorder)
+    assert "[capture]" in capsys.readouterr().out
+
+
+def test_make_recorder_uses_the_process_backend(tmp_path, monkeypatch):
+    from mvsync import capture, capture_proc
+
+    monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
+    monkeypatch.setattr(capture_proc, "resolve_spotify_pid", lambda: 4242)
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
+    assert isinstance(recorder, capture.ProcessLoopbackRecorder)
     assert recorder._pid == 4242

@@ -10,8 +10,14 @@ import threading
 import time
 import wave
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+from mvsync import config
+
+if TYPE_CHECKING:
+    from mvsync.capture_proc import ProcessLoopbackRecorder
 
 SAMPLE_RATE = 48000
 CHANNELS = 2
@@ -122,3 +128,40 @@ class LoopbackRecorder:
                     self.peak_db = sink.peak_db
         finally:
             sink.close()
+
+
+def make_recorder(
+    path: Path,
+    *,
+    root: Path | None = None,
+    mode: str | None = None,
+) -> LoopbackRecorder | ProcessLoopbackRecorder:
+    """Pick process capture when usable, otherwise whole-device loopback."""
+    chosen = mode if mode is not None else config.load_capture_mode(root)
+    if chosen == "device":
+        return LoopbackRecorder(path)
+    if chosen != "spotify":
+        print(f"[capture] unknown capture mode {chosen!r}; using device loopback")
+        return LoopbackRecorder(path)
+    try:
+        from mvsync import capture_proc
+    except ImportError as exc:
+        print(f"[capture] process capture unavailable ({exc}); using device loopback")
+        return LoopbackRecorder(path)
+    if not capture_proc.is_supported():
+        print("[capture] process capture needs Windows 10 build 20348; using device loopback")
+        return LoopbackRecorder(path)
+    pid = capture_proc.resolve_spotify_pid()
+    if pid is None:
+        print("[capture] Spotify audio session not found; using device loopback")
+        return LoopbackRecorder(path)
+    return capture_proc.ProcessLoopbackRecorder(path, pid=pid)
+
+
+def __getattr__(name: str) -> object:
+    """Load the optional process backend only when it is actually referenced."""
+    if name == "ProcessLoopbackRecorder":
+        from mvsync.capture_proc import ProcessLoopbackRecorder
+
+        return ProcessLoopbackRecorder
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
