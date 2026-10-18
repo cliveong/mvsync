@@ -1,5 +1,7 @@
 from mvsync.gui_console import KeySource, LogSink
 
+_RENDEZVOUS_TIMEOUT_S = 0.2
+
 
 def test_log_sink_collects_whole_lines():
     sink = LogSink()
@@ -104,31 +106,60 @@ def test_concurrent_use_does_not_raise():
 
 
 def test_log_sink_loses_no_writes_under_concurrency():
+    """Every write survives even when two writers are forced to overlap mid-update."""
     import threading
 
-    total = 10_000
+    first_inside = threading.Event()
+    partner_inside = threading.Event()
+
+    def rendezvous() -> None:
+        """Park the first writer mid-update until a second one reaches the same point.
+
+        With the lock in place the partner cannot get here, so this wait times out once
+        and every later call passes straight through.
+        """
+        if not first_inside.is_set():
+            first_inside.set()
+            partner_inside.wait(_RENDEZVOUS_TIMEOUT_S)
+        else:
+            partner_inside.set()
+
+    class InterleavingText(str):
+        """A buffer value whose += lets a second thread join the read-modify-write.
+
+        write() does self._text += text under self._lock, so a partner cannot reach
+        __add__ while the lock is held and no update can be lost. Without the lock both
+        threads read the same base value, meet here, and store in either order: the
+        later store drops the earlier one's line for good.
+        """
+
+        def __add__(self, other: str) -> "InterleavingText":
+            rendezvous()
+            return InterleavingText(str.__add__(self, other))
+
+        def rpartition(self, sep: str) -> tuple["InterleavingText", str, "InterleavingText"]:
+            """Keep the type (and the rendezvous) alive across drain()."""
+            head, separator, tail = str.rpartition(self, sep)
+            return InterleavingText(head), separator, InterleavingText(tail)
+
+    total = 24
+    per_thread = total // 2
     sink = LogSink(max_lines=total + 10)
-    done = threading.Event()
+    sink._text = InterleavingText("")  # the value write() will read-modify-write
 
-    def writer() -> None:
-        try:
-            for index in range(total):
-                sink.write(f"{index}\n")
-        finally:
-            done.set()
+    def writer(prefix: str) -> None:
+        for index in range(per_thread):
+            sink.write(f"{prefix}{index}\n")
 
-    drained: list[str] = []
+    threads = [
+        threading.Thread(target=writer, args=("a",)),
+        threading.Thread(target=writer, args=("b",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
-    def reader() -> None:
-        while not done.is_set():
-            drained.extend(sink.drain())
-
-    writer_thread = threading.Thread(target=writer)
-    reader_thread = threading.Thread(target=reader)
-    reader_thread.start()
-    writer_thread.start()
-    writer_thread.join()
-    reader_thread.join()
-    drained.extend(sink.drain())
-
+    drained = sink.drain()
     assert len(drained) == total
+    assert sorted(drained) == sorted(f"{p}{i}\n" for p in "ab" for i in range(per_thread))
