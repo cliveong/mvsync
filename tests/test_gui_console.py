@@ -79,7 +79,7 @@ def test_key_source_returns_pushes_in_order_then_empty():
     assert keys.poll() == ""
 
 
-def test_log_sink_and_key_source_survive_concurrent_use():
+def test_concurrent_use_does_not_raise():
     import threading
 
     sink = LogSink(max_lines=50)
@@ -101,3 +101,36 @@ def test_log_sink_and_key_source_survive_concurrent_use():
         thread.join()
 
     assert keys.poll() != "" or sink.text == ""
+
+
+def test_log_sink_loses_no_writes_under_concurrency():
+    import threading
+
+    total = 10_000
+    sink = LogSink(max_lines=total + 10)
+
+    def writer() -> None:
+        for index in range(total):
+            sink.write(f"{index}\n")
+
+    drained: list[str] = []
+    started = threading.Event()
+
+    def reader() -> None:
+        started.wait()
+        for _ in range(total * 20):
+            lines = sink.drain()
+            if lines:
+                drained.extend(lines)
+            if len(drained) >= total:
+                break
+
+    writer_thread = threading.Thread(target=writer)
+    reader_thread = threading.Thread(target=reader)
+    writer_thread.start()
+    started.set()
+    reader_thread.start()
+    writer_thread.join()
+    reader_thread.join()
+
+    assert len(drained) == total
