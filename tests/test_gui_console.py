@@ -4,7 +4,7 @@ from mvsync.gui_console import KeySource, LogSink
 def test_log_sink_collects_whole_lines():
     sink = LogSink()
     sink.write("hello\n")
-    assert sink.drain() == ["hello"]
+    assert sink.drain() == ["hello\n"]
 
 
 def test_log_sink_holds_back_a_line_without_a_newline():
@@ -12,7 +12,7 @@ def test_log_sink_holds_back_a_line_without_a_newline():
     sink.write("par")
     assert sink.drain() == []
     sink.write("tial\n")
-    assert sink.drain() == ["partial"]
+    assert sink.drain() == ["partial\n"]
 
 
 def test_log_sink_write_returns_the_character_count():
@@ -21,13 +21,21 @@ def test_log_sink_write_returns_the_character_count():
 
 
 def test_log_sink_drops_the_oldest_lines_past_the_cap():
-    """Drain hands back lines without their terminator, like the other drain cases."""
     sink = LogSink(max_lines=2)
     sink.write("a\n")
     sink.write("b\n")
     sink.write("c\n")
     assert sink.text == "b\nc\n"
-    assert sink.drain() == ["b", "c"]
+    assert sink.drain() == ["b\n", "c\n"]
+
+
+def test_log_sink_drain_keeps_a_partial_line_for_the_next_write():
+    sink = LogSink()
+    sink.write("done\nhalf")
+    assert sink.drain() == ["done\n"]
+    assert sink.text == "half"
+    sink.write(" more\n")
+    assert sink.drain() == ["half more\n"]
 
 
 def test_log_sink_is_a_stdout_stub():

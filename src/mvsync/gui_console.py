@@ -30,13 +30,13 @@ class LogSink:
         """No-op: the buffer is already in memory."""
 
     def drain(self) -> list[str]:
-        """Take every complete buffered line, leaving the buffer empty."""
+        """Take every complete line, newline included; an unfinished line stays buffered."""
         with self._lock:
-            head, newline, _ = self._text.rpartition("\n")
+            head, newline, tail = self._text.rpartition("\n")
             if not newline:
                 return []
-            self._text = ""
-        return head.split("\n")
+            self._text = tail
+        return [line + "\n" for line in head.split("\n")]
 
     @property
     def text(self) -> str:
