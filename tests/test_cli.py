@@ -33,7 +33,9 @@ def _fake_doctor(
     *,
     supported: bool = True,
     pid: int | None = 4242,
-    mode: str = "spotify",
+    mode: str = "process",
+    player: str = "vlc.exe",
+    exe: str = "vlc.exe",
 ) -> None:
     from mvsync import capture_proc
 
@@ -41,31 +43,46 @@ def _fake_doctor(
     monkeypatch.setattr(capture, "default_loopback", lambda: _FakeLoopback())
     monkeypatch.setattr(paths, "find_tool", _fake_tool)
     monkeypatch.setattr(config, "load_capture_mode", lambda root=None: mode)
+    monkeypatch.setattr(config, "load_player", lambda root=None: player)
+    monkeypatch.setattr(config, "load_player_exe", lambda root=None: exe)
     monkeypatch.setattr(capture_proc, "is_supported", lambda: supported)
-    monkeypatch.setattr(capture_proc, "resolve_spotify_pid", lambda: pid)
+    monkeypatch.setattr(capture_proc, "resolve_player_pid", lambda exe: pid)
     _fake_librosa(monkeypatch)
 
 
 def test_doctor_reports_the_active_capture_backend(capsys, monkeypatch):
-    _fake_doctor(monkeypatch, supported=True, pid=4242, mode="spotify")
+    _fake_doctor(monkeypatch, supported=True, pid=4242, mode="process")
 
     cli.doctor()
 
     out = capsys.readouterr().out
     assert "[doctor] capture:" in out
-    assert "mode=spotify" in out
+    assert "mode=process" in out
+    assert "player=vlc.exe" in out
+    assert "exe=vlc.exe" in out
     assert "pid=4242" in out
     assert "backend=process loopback" in out
     assert "[doctor] loopback device:" in out
 
 
-def test_doctor_reports_device_fallback_without_a_spotify_session(capsys, monkeypatch):
+def test_doctor_reports_device_fallback_without_a_player_session(capsys, monkeypatch):
     _fake_doctor(monkeypatch, supported=True, pid=None)
 
     cli.doctor()
 
     out = capsys.readouterr().out
     assert "no audio session" in out
+    assert "backend=device loopback" in out
+
+
+def test_doctor_reports_when_no_player_executable_is_configured(capsys, monkeypatch):
+    _fake_doctor(monkeypatch, supported=True, pid=None, player="", exe="")
+
+    cli.doctor()
+
+    out = capsys.readouterr().out
+    assert "exe=none" in out
+    assert "no player executable" in out
     assert "backend=device loopback" in out
 
 

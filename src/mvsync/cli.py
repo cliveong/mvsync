@@ -22,27 +22,32 @@ MENU = """
 
 
 def _doctor_capture_report() -> None:
-    """Print the configured and effective capture backend without raising."""
+    """Print the configured player and effective capture backend without raising."""
     try:
         from mvsync import config
+        from mvsync.player_process import guess_player_exe
 
         mode = config.load_capture_mode()
+        player = config.load_player()
+        exe = config.load_player_exe() or guess_player_exe(player)
     except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
         print(f"[doctor] capture: unavailable ({exc})")
         return
+    player_detail = player or "none"
+    exe_detail = exe or "none"
 
     try:
         from mvsync import capture_proc
     except ImportError as exc:
         print(
-            f"[doctor] capture: mode={mode}, process loopback unavailable ({exc}), "
-            "backend=device loopback"
+            f"[doctor] capture: mode={mode}, player={player_detail}, exe={exe_detail}, "
+            f"process loopback unavailable ({exc}), backend=device loopback"
         )
         return
     except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
         print(
-            f"[doctor] capture: mode={mode}, process loopback check failed ({exc}), "
-            "backend=unknown"
+            f"[doctor] capture: mode={mode}, player={player_detail}, exe={exe_detail}, "
+            f"process loopback check failed ({exc}), backend=unknown"
         )
         return
 
@@ -50,32 +55,37 @@ def _doctor_capture_report() -> None:
         supported = bool(capture_proc.is_supported())
     except Exception as exc:  # noqa: BLE001
         print(
-            f"[doctor] capture: mode={mode}, process loopback check failed ({exc}), "
-            "backend=unknown"
+            f"[doctor] capture: mode={mode}, player={player_detail}, exe={exe_detail}, "
+            f"process loopback check failed ({exc}), backend=unknown"
         )
         return
 
     pid: int | None = None
-    pid_detail = "no audio session"
-    try:
-        pid = capture_proc.resolve_spotify_pid()
-    except Exception as exc:  # noqa: BLE001
-        pid_detail = f"session check failed ({exc})"
-    if pid is not None:
-        pid_detail = f"pid={pid}"
+    if not exe:
+        pid_detail = "no player executable"
+    else:
+        pid_detail = "no audio session"
+        if supported:
+            try:
+                pid = capture_proc.resolve_player_pid(exe)
+            except Exception as exc:  # noqa: BLE001
+                pid_detail = f"session check failed ({exc})"
+            if pid is not None:
+                pid_detail = f"pid={pid}"
 
     try:
         from mvsync.capture import select_backend
     except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
         print(
-            f"[doctor] capture: mode={mode}, backend check failed ({exc}), backend=unknown"
+            f"[doctor] capture: mode={mode}, player={player_detail}, exe={exe_detail}, "
+            f"backend check failed ({exc}), backend=unknown"
         )
         return
     decision = select_backend(mode, supported, pid)
     backend = "process loopback" if decision == "process" else "device loopback"
     print(
-        f"[doctor] capture: mode={mode}, process loopback supported={supported}, "
-        f"spotify {pid_detail}, backend={backend}"
+        f"[doctor] capture: mode={mode}, player={player_detail}, exe={exe_detail}, "
+        f"process loopback supported={supported}, {pid_detail}, backend={backend}"
     )
 
 

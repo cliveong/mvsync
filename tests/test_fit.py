@@ -485,7 +485,7 @@ def test_first_listen_discards_when_the_recorder_cannot_start(tmp_path, monkeypa
 
     def fail(*args, **kwargs):
         calls.append((args, kwargs))
-        raise RuntimeError("no spotify process")
+        raise RuntimeError("no player process")
 
     monkeypatch.setattr(radio_module, "make_recorder", fail)
     recording.start(position_s=0.0, wall=time.time())
@@ -547,7 +547,7 @@ def test_first_listen_logs_a_capture_start_failure_once(tmp_path, monkeypatch, c
 
     def fail(*args, **kwargs):
         calls.append((args, kwargs))
-        raise RuntimeError("no spotify process")
+        raise RuntimeError("no player process")
 
     monkeypatch.setattr(radio_module, "make_recorder", fail)
     recording.start(position_s=0.0, wall=time.time())
@@ -557,7 +557,7 @@ def test_first_listen_logs_a_capture_start_failure_once(tmp_path, monkeypatch, c
     assert recording.started is False
     assert len(calls) == 1
     assert out.count("cannot record this listen") == 1
-    assert "no spotify process" in out
+    assert "no player process" in out
     recording.finish()
     assert not rec_path.exists()
 

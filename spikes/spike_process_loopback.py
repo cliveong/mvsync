@@ -11,17 +11,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mvsync import paths  # noqa: E402
-from mvsync.capture_proc import ProcessLoopbackRecorder, resolve_spotify_pid  # noqa: E402
+from mvsync.capture_proc import ProcessLoopbackRecorder, resolve_player_pid  # noqa: E402
 from mvsync.player_smtc import PlayerBridge  # noqa: E402
 
 SECONDS = 5.0
 PID_TIMEOUT_S = 3.0
+PLAYER_EXE = "spotify.exe"
 
 
 def _wait_for_pid(timeout: float = PID_TIMEOUT_S) -> int | None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        pid = resolve_spotify_pid()
+        pid = resolve_player_pid(PLAYER_EXE)
         if pid is not None:
             return pid
         time.sleep(0.1)
@@ -45,7 +46,7 @@ def main() -> int:
     was_playing = bool(state and state.playing)
     toggled = False
     try:
-        pid = resolve_spotify_pid()
+        pid = resolve_player_pid(PLAYER_EXE)
         if not was_playing:
             print("spotify is paused; starting playback for the spike")
             if not bridge.toggle_play_pause():

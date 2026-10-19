@@ -119,25 +119,15 @@ def test_set_capture_mode_rejects_unknown_values(tmp_path):
 @pytest.mark.parametrize(
     ("mode", "supported", "pid", "expected"),
     [
-        ("spotify", True, 4242, "process"),
-        ("spotify", False, 4242, "device"),
-        ("spotify", True, None, "device"),
+        ("process", True, 4242, "process"),
+        ("process", False, 4242, "device"),
+        ("process", True, None, "device"),
         ("device", True, 4242, "device"),
         ("stereo", True, 4242, "device"),
     ],
 )
 def test_select_backend_matches_the_recorder_factory(mode, supported, pid, expected):
     assert capture.select_backend(mode, supported, pid) == expected
-
-
-def test_make_recorder_falls_back_when_spotify_is_missing(tmp_path, capsys, monkeypatch):
-    from mvsync import capture, capture_proc
-
-    monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
-    monkeypatch.setattr(capture_proc, "resolve_spotify_pid", lambda: None)
-    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="spotify")
-    assert isinstance(recorder, capture.LoopbackRecorder)
-    assert "Spotify audio session not found; using device loopback" in capsys.readouterr().out
 
 
 def test_make_recorder_honors_device_mode(tmp_path):
@@ -150,9 +140,10 @@ def test_make_recorder_falls_back_when_process_capture_is_unimportable(
 ):
     import mvsync
 
+    monkeypatch.setattr("mvsync.capture.config.load_player_exe", lambda root=None: "vlc.exe")
     monkeypatch.delattr(mvsync, "capture_proc", raising=False)
     monkeypatch.setitem(sys.modules, "mvsync.capture_proc", None)
-    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="spotify")
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="process")
     assert isinstance(recorder, capture.LoopbackRecorder)
     assert "process capture unavailable" in capsys.readouterr().out
 
@@ -162,8 +153,9 @@ def test_make_recorder_falls_back_when_process_capture_is_unsupported(
 ):
     from mvsync import capture_proc
 
+    monkeypatch.setattr("mvsync.capture.config.load_player_exe", lambda root=None: "vlc.exe")
     monkeypatch.setattr(capture_proc, "is_supported", lambda: False)
-    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="spotify")
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="process")
     assert isinstance(recorder, capture.LoopbackRecorder)
     assert "needs Windows 10 build 20348" in capsys.readouterr().out
 
@@ -177,11 +169,63 @@ def test_make_recorder_falls_back_on_an_unknown_mode(tmp_path, capsys):
 def test_make_recorder_uses_the_process_backend(tmp_path, monkeypatch):
     from mvsync import capture, capture_proc
 
+    monkeypatch.setattr("mvsync.capture.config.load_player_exe", lambda root=None: "vlc.exe")
     monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
-    monkeypatch.setattr(capture_proc, "resolve_spotify_pid", lambda: 4242)
-    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="spotify")
+    monkeypatch.setattr(capture_proc, "resolve_player_pid", lambda exe: 4242)
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="process")
     assert isinstance(recorder, capture.ProcessLoopbackRecorder)
     assert recorder._pid == 4242
+
+
+def test_make_recorder_falls_back_when_no_player_exe_is_known(tmp_path, capsys, monkeypatch):
+    from mvsync import capture
+
+    monkeypatch.setattr("mvsync.capture.config.load_player_exe", lambda root=None: "")
+    monkeypatch.setattr("mvsync.capture.config.load_player", lambda root=None: "")
+    recorder = capture.make_recorder(tmp_path / "a.wav", mode="process")
+    assert isinstance(recorder, capture.LoopbackRecorder)
+    assert "no player executable" in capsys.readouterr().out
+
+
+def test_make_recorder_falls_back_when_the_player_has_no_audio_session(
+    tmp_path, capsys, monkeypatch
+):
+    from mvsync import capture, capture_proc
+
+    monkeypatch.setattr("mvsync.capture.config.load_player_exe", lambda root=None: "vlc.exe")
+    monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
+    monkeypatch.setattr(capture_proc, "resolve_player_pid", lambda exe: None)
+    recorder = capture.make_recorder(tmp_path / "a.wav", mode="process")
+    assert isinstance(recorder, capture.LoopbackRecorder)
+    assert "session not found" in capsys.readouterr().out
+
+
+def test_make_recorder_accepts_the_legacy_spotify_mode(tmp_path, monkeypatch):
+    from mvsync import capture, capture_proc
+
+    monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
+    monkeypatch.setattr(capture_proc, "resolve_player_pid", lambda exe: 4242)
+    monkeypatch.setattr("mvsync.capture.config.load_player_exe", lambda root=None: "spotify.exe")
+
+    recorder = capture.make_recorder(tmp_path / "a.wav", mode="spotify")
+    assert isinstance(recorder, capture.ProcessLoopbackRecorder)
+    assert recorder._pid == 4242
+
+
+def test_default_capture_mode_uses_the_process_backend(tmp_path, capsys, monkeypatch):
+    from mvsync import capture, capture_proc
+
+    monkeypatch.setattr("mvsync.capture.config.load_player_exe", lambda root=None: "vlc.exe")
+    monkeypatch.setattr("mvsync.capture.config.load_player", lambda root=None: "")
+    monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
+    monkeypatch.setattr(capture_proc, "resolve_player_pid", lambda exe: 4242)
+
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
+
+    assert config.load_capture_mode(tmp_path) == "process"
+    assert isinstance(recorder, capture.ProcessLoopbackRecorder)
+    assert recorder._pid == 4242
+    assert "unknown capture mode" not in capsys.readouterr().out
 
 
 def test_process_recorder_surfaces_a_wav_close_failure_after_uninitializing(

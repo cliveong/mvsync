@@ -168,10 +168,13 @@ def _record_and_fit(
             recorder.stop()
 
         if recorder.peak_db < SILENT_PEAK_DBFS:
-            if getattr(recorder, "backend", "device") == "spotify":
-                hint = "Spotify had no audio stream (app closed, or paused with nothing rendering)"
+            if getattr(recorder, "backend", "device") == "process":
+                hint = (
+                    "the player had no audio stream "
+                    "(app closed, or paused with nothing rendering)"
+                )
             else:
-                hint = "check that Spotify plays through the default output device"
+                hint = "check that the player plays through the default output device"
             raise ScanAborted(f"recording looks silent ({recorder.peak_db:.1f} dBFS peak); {hint}")
 
         ready = recorder.ready_epoch if recorder.ready_epoch is not None else play_press

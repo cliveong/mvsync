@@ -41,8 +41,6 @@ from pycaw.api.audioclient import IAudioClient
 
 from .capture import CHANNELS, SAMPLE_RATE, PcmSink
 
-SPOTIFY_PROCESS = "spotify.exe"
-
 AUDCLNT_SHAREMODE_SHARED = 0
 AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000
 AUDCLNT_STREAMFLAGS_EVENTCALLBACK = 0x00040000
@@ -209,8 +207,13 @@ def is_supported(build_number: int | None = None) -> bool:
     return build_number >= 20348
 
 
-def resolve_spotify_pid() -> int | None:
-    """PID of the Spotify audio session, or ``None`` when it has none."""
+def resolve_player_pid(exe_name: str | None) -> int | None:
+    """PID of the named player's audio session, or ``None`` when it has none."""
+    target = (exe_name or "").strip().lower()
+    if not target:
+        return None
+    if not target.endswith(".exe"):
+        target += ".exe"
     try:
         import psutil
         from pycaw.api.audiopolicy import IAudioSessionControl2
@@ -237,7 +240,7 @@ def resolve_spotify_pid() -> int | None:
                         name = psutil.Process(pid).name()
                     except Exception:
                         continue
-                    if name.lower() == SPOTIFY_PROCESS:
+                    if name.lower() == target:
                         return pid
             except Exception:
                 continue
@@ -277,7 +280,7 @@ def _make_activation(pid: int) -> tuple[PROPVARIANT, AUDIOCLIENT_ACTIVATION_PARA
 class ProcessLoopbackRecorder:
     """Records one process tree to a WAV file on a worker thread."""
 
-    backend = "spotify"
+    backend = "process"
 
     def __init__(
         self,

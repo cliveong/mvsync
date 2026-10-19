@@ -361,18 +361,14 @@ def test_scan_deletes_recording_on_abort(tmp_path, monkeypatch):
 
 
 def test_scan_silence_hint_names_the_process_backend(tmp_path, monkeypatch, capsys):
-    from mvsync import config
-
-    config.set_capture_mode("device", tmp_path)
-
     def align(*args, **kwargs):
         raise AssertionError("a silent recording must not be fitted")
 
-    rc = run_scan(monkeypatch, tmp_path, align=align, peak_db=-90.0, backend="spotify")
+    rc = run_scan(monkeypatch, tmp_path, align=align, peak_db=-90.0, backend="process")
 
     out = capsys.readouterr().out
     assert rc == 1
-    assert "Spotify had no audio stream" in out
+    assert "the player had no audio stream" in out
     assert "default output device" not in out
 
 
@@ -385,7 +381,7 @@ def test_scan_silence_hint_names_the_device_backend(tmp_path, monkeypatch, capsy
     out = capsys.readouterr().out
     assert rc == 1
     assert "default output device" in out
-    assert "Spotify had no audio stream" not in out
+    assert "the player had no audio stream" not in out
 
 
 def test_scan_deletes_recording_after_saving_its_map(tmp_path, monkeypatch):
