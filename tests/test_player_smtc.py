@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import sys
+import types
 
 
 def make_bridge(monkeypatch, session):
@@ -104,3 +106,83 @@ def test_choose_returns_none_when_nothing_matches(monkeypatch):
     bridge = player_smtc.PlayerBridge.__new__(player_smtc.PlayerBridge)
     bridge._match = "missing"
     assert bridge._choose([FakeSession("vlc.exe")]) is None
+
+
+class FakeManager:
+    def __init__(self, sessions=()):
+        self._sessions = list(sessions)
+
+    def get_sessions(self):
+        return list(self._sessions)
+
+
+def install_fake_winsdk(monkeypatch, manager):
+    from mvsync import player_smtc
+
+    class FakeSessionManager:
+        @staticmethod
+        def request_async():
+            return object()
+
+    control = types.ModuleType("winsdk.windows.media.control")
+    control.GlobalSystemMediaTransportControlsSessionManager = FakeSessionManager
+    for name, module in (
+        ("winsdk", types.ModuleType("winsdk")),
+        ("winsdk.windows", types.ModuleType("winsdk.windows")),
+        ("winsdk.windows.media", types.ModuleType("winsdk.windows.media")),
+        ("winsdk.windows.media.control", control),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(player_smtc, "_resolve", lambda value: manager)
+
+
+def test_the_constructor_reads_the_configured_player(monkeypatch):
+    from mvsync import player_smtc
+
+    install_fake_winsdk(monkeypatch, FakeManager())
+    monkeypatch.setattr(player_smtc.config, "load_player", lambda root=None: "vlc.exe")
+    assert player_smtc.PlayerBridge()._match == "vlc.exe"
+
+
+def test_an_explicit_match_overrides_the_configured_player(monkeypatch):
+    from mvsync import player_smtc
+
+    install_fake_winsdk(monkeypatch, FakeManager())
+    reads = []
+    monkeypatch.setattr(
+        player_smtc.config, "load_player", lambda root=None: reads.append(root) or "vlc.exe"
+    )
+    assert player_smtc.PlayerBridge(match="")._match == ""
+    assert reads == []
+
+
+class PickerSession:
+    def __init__(self, app_id, properties, playing=False):
+        self.source_app_user_model_id = app_id
+        self._properties = properties
+        self._playing = playing
+
+    def try_get_media_properties_async(self):
+        return self._properties
+
+    def get_playback_info(self):
+        return self
+
+
+def test_sessions_reports_every_session_in_order(monkeypatch):
+    from mvsync import player_smtc
+
+    class Properties:
+        title = "Song"
+        artist = "Artist"
+
+    monkeypatch.setattr(player_smtc, "_is_playing", lambda playback: playback._playing)
+    full = PickerSession("vlc.exe", Properties(), playing=True)
+    blank = PickerSession("browser.exe", None)
+    bridge = player_smtc.PlayerBridge.__new__(player_smtc.PlayerBridge)
+    bridge._manager = FakeManager([full, blank])
+    sessions = bridge.sessions()
+    assert [(s.app_id, s.title, s.artist, s.playing) for s in sessions] == [
+        ("vlc.exe", "Song", "Artist", True),
+        ("browser.exe", "", "", False),
+    ]
