@@ -1,11 +1,13 @@
 import pytest
 
+from mvsync import mv_search
 from mvsync.cli import _parse_menu_args
 from mvsync.mv_search import (
     Candidate,
     candidate_lines,
     parse_search_output,
     pick_best,
+    pick_mv_candidates,
     prioritize,
     rank_candidates,
 )
@@ -17,6 +19,11 @@ def test_menu_args_parse_pick_and_url():
     assert _parse_menu_args("3 https://youtu.be/x --pick 2") == ("https://youtu.be/x", 2)
     assert _parse_menu_args("2 https://youtu.be/x") == ("https://youtu.be/x", None)
     assert _parse_menu_args("3 --pick") == ("--pick", None)
+
+
+def test_parse_search_output_keeps_description():
+    text = '{"id": "abc", "title": "T", "description": "Provided to YouTube by X"}\n'
+    assert parse_search_output(text)[0].description == "Provided to YouTube by X"
 
 
 def test_parse_search_output_skips_junk_and_missing_ids():
@@ -60,6 +67,102 @@ def test_rank_prefers_official_mv_over_fansub_upload():
     ]
     ranked = rank_candidates(candidates, 223.5, "TAEYEON", "11:11")
     assert ranked[0].video_id == "ulr0muQKjk0"
+
+
+def test_rank_orders_mv_before_official_audio_before_official_live():
+    candidates = [
+        Candidate("live", "NMIXX 너는 달 (Sing to the Moon) (Official Live)", 240.0, "NMIXX"),
+        Candidate("audio", "NMIXX 너는 달 (Sing to the Moon) (Official Audio)", 240.0, "NMIXX"),
+        Candidate("mv", "NMIXX 너는 달 (Sing to the Moon) MV", 240.0, "NMIXX"),
+    ]
+    ranked = rank_candidates(candidates, 240.0, "NMIXX", "Sing to the Moon")
+    assert [candidate.video_id for candidate in ranked] == ["mv", "audio", "live"]
+
+
+def test_official_channel_live_loses_only_one_point():
+    from mvsync.mv_search import _score
+
+    live = Candidate("live", "NMIXX Sing to the Moon (Live)", 240.0, "NMIXX Official")
+    studio = Candidate("studio", "NMIXX Sing to the Moon", 240.0, "NMIXX Official")
+    assert (
+        _score(studio, 240.0, "NMIXX", "Sing to the Moon")
+        == _score(live, 240.0, "NMIXX", "Sing to the Moon") + 1.0
+    )
+
+
+def test_rank_puts_title_matches_before_same_artist_mvs():
+    candidates = [
+        Candidate("random", "NMIXX Blue Valentine M/V", 195.0, "JYP Entertainment"),
+        Candidate("right", "너는 달 (Sing to the Moon) (LILY, HAEWON)", 240.0, "NMIXX"),
+    ]
+    ranked = rank_candidates(candidates, 240.0, "NMIXX", "Sing to the Moon")
+    assert [candidate.video_id for candidate in ranked] == ["right", "random"]
+
+
+def test_rank_prefers_label_provided_upload_over_wrong_artist_mv():
+    candidates = [
+        Candidate(
+            "wrong",
+            "KIDZ BOP Kids - Do You Remember (Official Music Video) [KIDZ BOP 18]",
+            179.0,
+            "KIDZ BOP",
+            "KIDZ BOP Kids sing Do You Remember",
+        ),
+        Candidate(
+            "live",
+            "도경수 Doh Kyung Soo '놀이터 (Do you remember?)' Live Clip (Preview)",
+            133.0,
+            "컴퍼니수수 Company Soosoo",
+            "도경수 #Dohkyungsoo #BLISS",
+        ),
+        Candidate(
+            "target",
+            "Do you remember?",
+            178.0,
+            "도경수(DOH KYUNG SOO)",
+            "Provided to YouTube by FLUXUS Do you remember? · D.O. The 1st full album [BLISS]",
+        ),
+        Candidate(
+            "lyric",
+            "Doh Kyung Soo (D.O.) 'Do you remember?' Lyrics (도경수 놀이터 가사)",
+            180.0,
+            "ShadowByYoongi",
+            "Artist: Doh Kyung Soo Song: Do you remember?",
+        ),
+        Candidate(
+            "fancam",
+            "250720 도경수 (D.O.) 놀이터 (Do you remember?) DO it!",
+            189.0,
+            "롹",
+            "",
+        ),
+    ]
+    ranked = rank_candidates(candidates, 177.133, "D.O.", "Do you remember?")
+    assert ranked[0].video_id == "target"
+
+
+def test_pick_mv_candidates_finds_official_audio_for_b_side(monkeypatch):
+    mv_results = [
+        Candidate("random", "NMIXX Blue Valentine M/V", 195.0, "JYP Entertainment"),
+        Candidate("same", "너는 달 (Sing to the Moon) (LILY, HAEWON)", 240.0, "NMIXX"),
+    ]
+
+    def fake_search(query, *, root=None):
+        if query.endswith(" MV"):
+            return mv_results
+        return [
+            Candidate(
+                "H6Uv2xfdo0I",
+                "NMIXX 너는 달 (Sing to the Moon) (Official Audio)",
+                240.0,
+                "NMIXX",
+            ),
+            *mv_results,
+        ]
+
+    monkeypatch.setattr(mv_search, "search_candidates", fake_search)
+    ranked = pick_mv_candidates("NMIXX", "Sing to the Moon", 240.0)
+    assert ranked[0].video_id == "H6Uv2xfdo0I"
 
 
 def test_pick_best_filters_impossible_durations():
