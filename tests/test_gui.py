@@ -867,3 +867,45 @@ def test_declining_the_way_back_keeps_the_fixer_open(monkeypatch):
     assert window.busy is False
     assert window.back_calls == 0
     assert window.refreshed == 1
+
+
+def test_player_label_names_the_track_and_app():
+    from mvsync.gui import player_label
+    from mvsync.player_smtc import PlayerSession
+
+    label = player_label(PlayerSession("vlc.exe", "Song", "Artist", True))
+    assert "Song" in label and "Artist" in label and "vlc.exe" in label
+
+
+def test_player_index_prefers_the_configured_match():
+    from mvsync.gui import player_index
+    from mvsync.player_smtc import PlayerSession
+
+    sessions = [
+        PlayerSession("browser.exe", "Video", "Channel", True),
+        PlayerSession("vlc.exe", "Song", "Artist", False),
+    ]
+    assert player_index(sessions, "vlc") == 1
+    assert player_index(sessions, "missing") == 0
+    assert player_index([], "vlc") is None
+
+
+def test_selecting_a_player_saves_the_app_and_guessed_exe(monkeypatch):
+    from mvsync import gui
+    from mvsync.player_smtc import PlayerSession
+
+    saved = []
+    window = StandInWindow()
+    window._root_dir = None
+    window._players = [PlayerSession("vlc.exe", "Song", "Artist", True)]
+    window._player_box = type("Box", (), {"current": lambda self: 0})()
+    window._log = lambda message: None
+    window.refresh_track = lambda: None
+    monkeypatch.setattr(gui, "guess_player_exe", lambda app_id: "vlc.exe")
+    monkeypatch.setattr(
+        gui.config, "save_player", lambda app, exe, root=None: saved.append((app, exe))
+    )
+
+    gui.MainWindow._select_player(window)
+
+    assert saved == [("vlc.exe", "vlc.exe")]

@@ -13,12 +13,13 @@ from functools import partial
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from mvsync import devlog, paths, session
+from mvsync import config, devlog, paths, session
 from mvsync.align_store import load_newest_alignment, make_track_id
 from mvsync.gui_console import KeySource, LogSink
 from mvsync.mv_audio import parse_video_id
 from mvsync.mv_search import Candidate, pick_mv_candidates, prioritize, video_url
-from mvsync.player_smtc import PlayerBridge, PlayerState
+from mvsync.player_process import guess_player_exe
+from mvsync.player_smtc import PlayerBridge, PlayerSession, PlayerState
 from mvsync.scan_runtime import ScanAborted, ScanResult, scan_with_candidates
 
 MAIN_ACTIONS = ("play", "scan", "fix", "doctor")
@@ -61,6 +62,29 @@ def format_length(seconds: float | None) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
+def player_label(session: PlayerSession) -> str:
+    """One picker row: the track, its artist, and the owning app."""
+    title = session.title or "unknown title"
+    artist = session.artist or "unknown artist"
+    app_id = session.app_id or "unknown player"
+    return f"{title} ({artist}) [{app_id}]"
+
+
+def player_index(sessions: list[PlayerSession], match: str) -> int | None:
+    """The configured player's index, else the first playing session, else zero."""
+    if not sessions:
+        return None
+    if match:
+        wanted = match.lower()
+        for index, session in enumerate(sessions):
+            if wanted in session.app_id.lower():
+                return index
+    for index, session in enumerate(sessions):
+        if session.playing:
+            return index
+    return 0
+
+
 def candidate_row_values(
     rank: int, candidate: Candidate, in_use_video_id: str | None
 ) -> tuple[str, str, str, str, str]:
@@ -96,6 +120,7 @@ class MainWindow(tk.Tk):
         self.minsize(680, 560)
         self._root_dir = root
         self._state: PlayerState | None = None
+        self._players: list[PlayerSession] = []
         self._keys = KeySource()
         self._busy = False
         self._locked = False
@@ -113,6 +138,7 @@ class MainWindow(tk.Tk):
             self._log(f"[log] writing {log_path}")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self.refresh_track)
+        self.refresh_players()
 
     def _build_ui(self) -> None:
         top = ttk.Frame(self, padding=8)
@@ -120,6 +146,19 @@ class MainWindow(tk.Tk):
         self._track_label = ttk.Label(top, text="no player session")
         self._track_label.pack(side="left", fill="x", expand=True)
         ttk.Button(top, text="Refresh track", command=self.refresh_track).pack(side="right")
+
+        player_row = ttk.Frame(self, padding=(8, 0, 8, 8))
+        player_row.pack(fill="x")
+        ttk.Label(player_row, text="Player").pack(side="left")
+        ttk.Button(player_row, text="Refresh players", command=self.refresh_players).pack(
+            side="right"
+        )
+        self._player_var = tk.StringVar()
+        self._player_box = ttk.Combobox(
+            player_row, textvariable=self._player_var, state="readonly"
+        )
+        self._player_box.pack(side="left", fill="x", expand=True, padx=(4, 4))
+        self._player_box.bind("<<ComboboxSelected>>", lambda event: self._select_player())
 
         actions = ttk.Frame(self, padding=(8, 0))
         actions.pack(fill="x")
@@ -250,6 +289,37 @@ class MainWindow(tk.Tk):
             )
         )
         self._refresh_lock()
+
+    def refresh_players(self) -> None:
+        """Fill the picker with SMTC sessions; a missing bridge only disables it."""
+        try:
+            sessions = PlayerBridge().sessions()
+        except Exception as exc:  # noqa: BLE001 - the window must open without a player
+            self._players = []
+            self._player_box.configure(values=())
+            self._player_box.set("")
+            self._log(f"[gui] player list unavailable: {exc}")
+            return
+        self._players = sessions
+        self._player_box.configure(values=[player_label(session) for session in sessions])
+        index = player_index(sessions, config.load_player(self._root_dir))
+        if index is None:
+            self._player_box.set("")
+        else:
+            self._player_box.current(index)
+
+    def _select_player(self) -> None:
+        """Persist the picked player and re-read the track through it."""
+        if not self._players:
+            return
+        index = self._player_box.current()
+        if not 0 <= index < len(self._players):
+            return
+        app_id = self._players[index].app_id
+        exe = guess_player_exe(app_id)
+        config.save_player(app_id, exe, self._root_dir)
+        self._log(f"[gui] player {app_id}" + (f" ({exe})" if exe else ""))
+        self.refresh_track()
 
     def _run(self, action: str, worker: Callable[[], int]) -> None:
         """Run one operation on a worker thread, capturing stdout into the log pane."""
