@@ -9,6 +9,7 @@ substring) pins the bridge to one player.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass
 
@@ -34,6 +35,7 @@ class PlayerSession:
 
 
 _LOOP: asyncio.AbstractEventLoop | None = None
+_LOOP_LOCK = threading.Lock()
 
 
 async def _await_operation(operation):
@@ -51,9 +53,10 @@ def _resolve(value):
     if not hasattr(value, "__await__"):
         return value
     global _LOOP
-    if _LOOP is None or _LOOP.is_closed():
-        _LOOP = asyncio.new_event_loop()
-    return _LOOP.run_until_complete(_await_operation(value))
+    with _LOOP_LOCK:
+        if _LOOP is None or _LOOP.is_closed():
+            _LOOP = asyncio.new_event_loop()
+        return _LOOP.run_until_complete(_await_operation(value))
 
 
 def _seconds(delta) -> float:
@@ -108,6 +111,13 @@ class PlayerBridge:
 
     def _session(self):
         return self._choose(self._sessions())
+
+    def selected_app_id(self) -> str | None:
+        """The app id of the session the bridge currently follows, or None."""
+        session = self._session()
+        if session is None:
+            return None
+        return session.source_app_user_model_id or None
 
     def session_available(self) -> bool:
         return self._session() is not None

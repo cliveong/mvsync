@@ -886,8 +886,30 @@ def test_player_index_prefers_the_configured_match():
         PlayerSession("vlc.exe", "Song", "Artist", False),
     ]
     assert player_index(sessions, "vlc") == 1
-    assert player_index(sessions, "missing") == 0
+    assert player_index(sessions, "missing") is None
     assert player_index([], "vlc") is None
+
+
+def test_player_index_without_a_match_uses_the_first_playing_session():
+    from mvsync.gui import player_index
+    from mvsync.player_smtc import PlayerSession
+
+    sessions = [
+        PlayerSession("browser.exe", "Video", "Channel", False),
+        PlayerSession("vlc.exe", "Song", "Artist", True),
+    ]
+    assert player_index(sessions, "") == 1
+
+
+def test_player_index_without_a_match_or_a_playing_session_uses_the_first():
+    from mvsync.gui import player_index
+    from mvsync.player_smtc import PlayerSession
+
+    sessions = [
+        PlayerSession("browser.exe", "Video", "Channel", False),
+        PlayerSession("vlc.exe", "Song", "Artist", False),
+    ]
+    assert player_index(sessions, "") == 0
 
 
 def test_selecting_a_player_saves_the_app_and_guessed_exe(monkeypatch):

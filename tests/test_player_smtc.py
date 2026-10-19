@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import sys
+import threading
 import types
 
 
@@ -108,6 +110,16 @@ def test_choose_returns_none_when_nothing_matches(monkeypatch):
     assert bridge._choose([FakeSession("vlc.exe")]) is None
 
 
+def test_selected_app_id_returns_the_chosen_session(monkeypatch):
+    bridge = make_bridge(monkeypatch, FakeSession("vlc.exe"))
+    assert bridge.selected_app_id() == "vlc.exe"
+
+
+def test_selected_app_id_is_none_without_a_session(monkeypatch):
+    bridge = make_bridge(monkeypatch, None)
+    assert bridge.selected_app_id() is None
+
+
 class FakeManager:
     def __init__(self, sessions=()):
         self._sessions = list(sessions)
@@ -167,6 +179,69 @@ class PickerSession:
 
     def get_playback_info(self):
         return self
+
+
+class ConcurrencyTracker:
+    def __init__(self):
+        self._guard = threading.Lock()
+        self.active = 0
+        self.peak = 0
+
+    def enter(self):
+        with self._guard:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+
+    def leave(self):
+        with self._guard:
+            self.active -= 1
+
+
+class SlowAwaitable:
+    """A fake WinRT operation that records how many awaits run at once."""
+
+    def __init__(self, tracker, delay=0.2):
+        self._tracker = tracker
+        self._delay = delay
+
+    def __await__(self):
+        return self._wait().__await__()
+
+    async def _wait(self):
+        self._tracker.enter()
+        try:
+            await asyncio.sleep(self._delay)
+            return "done"
+        finally:
+            self._tracker.leave()
+
+
+def test_concurrent_resolves_are_serialized(monkeypatch):
+    from mvsync import player_smtc
+
+    monkeypatch.setattr(player_smtc, "_LOOP", None)
+    tracker = ConcurrencyTracker()
+    results = []
+    errors = []
+    start = threading.Barrier(3)
+
+    def resolve():
+        start.wait(timeout=5.0)
+        try:
+            results.append(player_smtc._resolve(SlowAwaitable(tracker)))
+        except BaseException as exc:  # noqa: BLE001 - collected for the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=resolve) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    start.wait(timeout=5.0)
+    for thread in threads:
+        thread.join(timeout=5.0)
+
+    assert errors == []
+    assert results == ["done", "done"]
+    assert tracker.peak == 1
 
 
 def test_sessions_reports_every_session_in_order(monkeypatch):

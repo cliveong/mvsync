@@ -13,6 +13,9 @@ class _FakeBridge:
     def current(self):
         return None
 
+    def selected_app_id(self):
+        return None
+
 
 class _FakeLoopback:
     name = "fake speaker"
@@ -78,12 +81,38 @@ def test_doctor_reports_device_fallback_without_a_player_session(capsys, monkeyp
 def test_doctor_reports_when_no_player_executable_is_configured(capsys, monkeypatch):
     _fake_doctor(monkeypatch, supported=True, pid=None, player="", exe="")
 
+    class FailingBridge(_FakeBridge):
+        def selected_app_id(self):
+            raise RuntimeError("no smtc")
+
+    monkeypatch.setattr(player_smtc, "PlayerBridge", FailingBridge)
+
     cli.doctor()
 
     out = capsys.readouterr().out
     assert "exe=none" in out
     assert "no player executable" in out
     assert "backend=device loopback" in out
+
+
+def test_doctor_uses_the_auto_selected_player(capsys, monkeypatch):
+    from mvsync import player_process
+
+    class AutoBridge(_FakeBridge):
+        def selected_app_id(self):
+            return "vlc"
+
+    _fake_doctor(monkeypatch, supported=True, pid=4242, player="", exe="")
+    monkeypatch.setattr(player_smtc, "PlayerBridge", AutoBridge)
+    monkeypatch.setattr(player_process, "guess_player_exe", lambda app_id: "vlc.exe")
+
+    cli.doctor()
+
+    out = capsys.readouterr().out
+    assert "player=vlc," in out
+    assert "exe=vlc.exe" in out
+    assert "pid=4242" in out
+    assert "backend=process loopback" in out
 
 
 def test_doctor_reports_unsupported_process_loopback(capsys, monkeypatch):

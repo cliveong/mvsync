@@ -81,6 +81,69 @@ def test_process_structs_have_the_win32_layout():
     )
 
 
+def _install_fake_audio_modules(monkeypatch, *, pid=4242, process_name="vlc.exe"):
+    import types
+
+    session = type("Session", (), {"GetProcessId": lambda self: pid})()
+    control = type("Control", (), {"QueryInterface": lambda self, iface: session})()
+    enumerator = type(
+        "Enumerator",
+        (),
+        {"GetCount": lambda self: 1, "GetSession": lambda self, index: control},
+    )()
+    session_manager = type(
+        "SessionManager", (), {"GetSessionEnumerator": lambda self: enumerator}
+    )()
+    device = type("Device", (), {"AudioSessionManager": session_manager})()
+
+    class FakeProcess:
+        def __init__(self, process_id):
+            self.pid = process_id
+
+        def name(self):
+            return process_name
+
+    psutil = types.ModuleType("psutil")
+    psutil.Process = FakeProcess
+
+    pycaw = types.ModuleType("pycaw")
+    pycaw_api = types.ModuleType("pycaw.api")
+    audiopolicy = types.ModuleType("pycaw.api.audiopolicy")
+    audiopolicy.IAudioSessionControl2 = object
+    constants = types.ModuleType("pycaw.constants")
+    constants.DEVICE_STATE = types.SimpleNamespace(ACTIVE=types.SimpleNamespace(value=1))
+    constants.EDataFlow = types.SimpleNamespace(eRender=types.SimpleNamespace(value=0))
+    utils = types.ModuleType("pycaw.utils")
+    utils.AudioUtilities = types.SimpleNamespace(
+        GetAllDevices=lambda flow, state: [device]
+    )
+    pycaw.api = pycaw_api
+    pycaw_api.audiopolicy = audiopolicy
+    for name, module in (
+        ("psutil", psutil),
+        ("pycaw", pycaw),
+        ("pycaw.api", pycaw_api),
+        ("pycaw.api.audiopolicy", audiopolicy),
+        ("pycaw.constants", constants),
+        ("pycaw.utils", utils),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+
+
+def test_resolve_player_pid_matches_a_full_path_exe(monkeypatch):
+    from mvsync import capture_proc
+
+    _install_fake_audio_modules(monkeypatch)
+
+    assert capture_proc.resolve_player_pid(r"C:\Program Files\VLC\vlc.exe") == 4242
+
+
+def test_resolve_player_pid_rejects_empty_input(monkeypatch):
+    from mvsync import capture_proc
+
+    assert capture_proc.resolve_player_pid("   ") is None
+
+
 def test_process_recorder_keeps_its_pid():
     from mvsync import capture_proc
 
@@ -178,13 +241,76 @@ def test_make_recorder_uses_the_process_backend(tmp_path, monkeypatch):
 
 
 def test_make_recorder_falls_back_when_no_player_exe_is_known(tmp_path, capsys, monkeypatch):
-    from mvsync import capture
+    from mvsync import capture, player_smtc
+
+    class FailingBridge:
+        def __init__(self):
+            raise RuntimeError("winsdk is not installed")
 
     monkeypatch.setattr("mvsync.capture.config.load_player_exe", lambda root=None: "")
     monkeypatch.setattr("mvsync.capture.config.load_player", lambda root=None: "")
+    monkeypatch.setattr(player_smtc, "PlayerBridge", FailingBridge)
     recorder = capture.make_recorder(tmp_path / "a.wav", mode="process")
     assert isinstance(recorder, capture.LoopbackRecorder)
     assert "no player executable" in capsys.readouterr().out
+
+
+def test_make_recorder_auto_selects_the_player_when_no_configuration(tmp_path, monkeypatch):
+    from mvsync import capture, capture_proc, player_smtc
+
+    class AutoBridge:
+        def selected_app_id(self):
+            return "vlc"
+
+    guessed = []
+
+    def guess(app_id):
+        guessed.append(app_id)
+        return "vlc.exe"
+
+    monkeypatch.setattr("mvsync.capture.config.load_player_exe", lambda root=None: "")
+    monkeypatch.setattr("mvsync.capture.config.load_player", lambda root=None: "")
+    monkeypatch.setattr("mvsync.capture.guess_player_exe", guess)
+    monkeypatch.setattr(player_smtc, "PlayerBridge", AutoBridge)
+    monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
+    monkeypatch.setattr(capture_proc, "resolve_player_pid", lambda exe: 4242)
+
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="process")
+
+    assert guessed == ["vlc"]
+    assert isinstance(recorder, capture.ProcessLoopbackRecorder)
+    assert recorder._pid == 4242
+
+
+def test_make_recorder_prefers_a_configured_exe_over_auto_selection(tmp_path, monkeypatch):
+    from mvsync import capture, capture_proc, player_smtc
+
+    built = []
+
+    class AutoBridge:
+        def __init__(self):
+            built.append(True)
+
+        def selected_app_id(self):
+            return "vlc"
+
+    resolved = []
+    monkeypatch.setattr(
+        "mvsync.capture.config.load_player_exe", lambda root=None: "custom.exe"
+    )
+    monkeypatch.setattr("mvsync.capture.config.load_player", lambda root=None: "")
+    monkeypatch.setattr(player_smtc, "PlayerBridge", AutoBridge)
+    monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
+    monkeypatch.setattr(
+        capture_proc, "resolve_player_pid", lambda exe: resolved.append(exe) or 4242
+    )
+
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="process")
+
+    assert built == []
+    assert resolved == ["custom.exe"]
+    assert isinstance(recorder, capture.ProcessLoopbackRecorder)
+    assert recorder._pid == 4242
 
 
 def test_make_recorder_falls_back_when_the_player_has_no_audio_session(

@@ -33,7 +33,7 @@ from ctypes import (
     c_void_p,
 )
 from ctypes.wintypes import DWORD, HANDLE, LPCWSTR, WORD
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import numpy as np
 from comtypes import COMMETHOD, GUID, HRESULT, COMObject, IUnknown
@@ -212,6 +212,7 @@ def resolve_player_pid(exe_name: str | None) -> int | None:
     target = (exe_name or "").strip().lower()
     if not target:
         return None
+    target = PureWindowsPath(target).name
     if not target.endswith(".exe"):
         target += ".exe"
     try:

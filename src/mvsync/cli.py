@@ -29,7 +29,19 @@ def _doctor_capture_report() -> None:
 
         mode = config.load_capture_mode()
         player = config.load_player()
-        exe = config.load_player_exe() or guess_player_exe(player)
+        exe = config.load_player_exe()
+        if not exe and player:
+            exe = guess_player_exe(player)
+        if not exe and not player:
+            try:
+                from mvsync.player_smtc import PlayerBridge
+
+                auto_player = PlayerBridge().selected_app_id()
+            except Exception:  # noqa: BLE001 - doctor reports, never raises
+                auto_player = None
+            if auto_player:
+                player = auto_player
+                exe = guess_player_exe(auto_player)
     except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
         print(f"[doctor] capture: unavailable ({exc})")
         return

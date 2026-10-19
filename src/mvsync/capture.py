@@ -157,7 +157,19 @@ def make_recorder(
         print(f"[capture] unknown capture mode {chosen!r}; using device loopback")
         devlog.log("capture_backend", mode=chosen, backend="device", reason="unknown mode")
         return LoopbackRecorder(path)
-    exe = config.load_player_exe(root) or guess_player_exe(config.load_player(root))
+    player = config.load_player(root)
+    exe = config.load_player_exe(root)
+    if not exe and player:
+        exe = guess_player_exe(player)
+    if not exe and not player:
+        try:
+            from mvsync.player_smtc import PlayerBridge
+
+            app_id = PlayerBridge().selected_app_id()
+        except Exception:  # noqa: BLE001 - auto-detection is best effort
+            app_id = None
+        if app_id:
+            exe = guess_player_exe(app_id)
     if not exe:
         print("[capture] no player executable configured; using device loopback")
         devlog.log("capture_backend", mode=chosen, backend="device", reason="no player exe")

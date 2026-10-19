@@ -79,6 +79,7 @@ def player_index(sessions: list[PlayerSession], match: str) -> int | None:
         for index, session in enumerate(sessions):
             if wanted in session.app_id.lower():
                 return index
+        return None
     for index, session in enumerate(sessions):
         if session.playing:
             return index
