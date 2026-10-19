@@ -37,3 +37,7 @@ follow the terms of the services you use.
 5. During playback: `q` quits, `r` resyncs, `[` and `]` trim the offset by
    50 ms, `p` toggles the player. The mpv window keeps its size and fullscreen
    state when the video changes.
+
+## License
+
+MIT. See `LICENSE`.

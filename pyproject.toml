@@ -2,6 +2,7 @@
 name = "mvsync"
 version = "0.1.0"
 description = "Play a muted YouTube music video beside the track already playing in your media player."
+license = { text = "MIT" }
 requires-python = ">=3.12"
 
 [tool.pytest.ini_options]
