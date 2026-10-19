@@ -14,8 +14,8 @@ import pytest
 
 from mvsync.align_store import make_track_id
 from mvsync.mv_search import Candidate
+from mvsync.player_smtc import PlayerState
 from mvsync.scan_runtime import ScanAborted, _apply_prompt_answer, _record_until_end
-from mvsync.spotify_smtc import SpotifyState
 from mvsync.timeline import Alignment, Anchor
 
 PLAY_PRESS = 1000.0
@@ -40,7 +40,7 @@ class FakeBridge:
         self.clock = clock
         self.state_fn = state_fn
 
-    def current(self) -> SpotifyState:
+    def current(self) -> PlayerState:
         return self.state_fn(self.clock.now)
 
 
@@ -50,8 +50,8 @@ def make_state(
     playing: bool,
     title: str = "Title",
     artist: str = "Artist",
-) -> SpotifyState:
-    return SpotifyState(
+) -> PlayerState:
+    return PlayerState(
         title=title,
         artist=artist,
         duration_s=DURATION,
@@ -240,7 +240,7 @@ class ScanBridge:
         self.clock = clock
         self.toggles = toggles
 
-    def current(self) -> SpotifyState:
+    def current(self) -> PlayerState:
         if not self.toggles:
             return make_state(0.0, self.clock.now, True)
         if len(self.toggles) == 1:
@@ -291,7 +291,7 @@ def run_scan(monkeypatch, tmp_path, *, align, fetch=None, peak_db=-30.0, backend
     bridge = ScanBridge(clock, toggles)
     FakeRecorder.instances = []
     monkeypatch.setattr("mvsync.scan_runtime.time", clock)
-    monkeypatch.setattr(scan_runtime, "SpotifyBridge", lambda: bridge)
+    monkeypatch.setattr(scan_runtime, "PlayerBridge", lambda: bridge)
 
     def make_recorder(path, *, root=None, mode=None):
         recorder = FakeRecorder(path, clock)
@@ -323,7 +323,7 @@ def test_scan_aborts_on_blank_metadata(tmp_path, monkeypatch, capsys):
     from mvsync import scan_runtime
 
     class BlankBridge:
-        def current(self) -> SpotifyState:
+        def current(self) -> PlayerState:
             return make_state(0.0, PLAY_PRESS, False, title="", artist="")
 
         def toggle_play_pause(self) -> None:
@@ -334,7 +334,7 @@ def test_scan_aborts_on_blank_metadata(tmp_path, monkeypatch, capsys):
 
     import builtins
 
-    monkeypatch.setattr(scan_runtime, "SpotifyBridge", lambda: BlankBridge())
+    monkeypatch.setattr(scan_runtime, "PlayerBridge", lambda: BlankBridge())
     monkeypatch.setattr(
         scan_runtime,
         "make_recorder",
@@ -423,7 +423,7 @@ def run_scan_with_candidates(monkeypatch, tmp_path, *, align, fetch=None, candid
     bridge = ScanBridge(clock, toggles)
     FakeRecorder.instances = []
     monkeypatch.setattr("mvsync.scan_runtime.time", clock)
-    monkeypatch.setattr(scan_runtime, "SpotifyBridge", lambda: bridge)
+    monkeypatch.setattr(scan_runtime, "PlayerBridge", lambda: bridge)
     monkeypatch.setattr(
         scan_runtime,
         "make_recorder",

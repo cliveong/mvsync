@@ -10,16 +10,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mvsync.spotify_smtc import SpotifyBridge  # noqa: E402
+from mvsync.player_smtc import PlayerBridge  # noqa: E402
 
 SECONDS = 20.0
 
 
 def main() -> int:
-    bridge = SpotifyBridge()
+    bridge = PlayerBridge()
     state = bridge.current()
     if state is None:
-        print("no Spotify SMTC session found; open the Spotify desktop app")
+        print("no player SMTC session found; start playback in your media player")
         return 1
     print(f"session: {state.artist} - {state.title} playing={state.playing}")
     updates = 0

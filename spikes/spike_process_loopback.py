@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mvsync import paths  # noqa: E402
 from mvsync.capture_proc import ProcessLoopbackRecorder, resolve_spotify_pid  # noqa: E402
-from mvsync.spotify_smtc import SpotifyBridge  # noqa: E402
+from mvsync.player_smtc import PlayerBridge  # noqa: E402
 
 SECONDS = 5.0
 PID_TIMEOUT_S = 3.0
@@ -40,7 +40,7 @@ def _wait_until_paused(bridge, timeout: float = 2.0) -> bool:
 
 def main() -> int:
     target = paths.ensure_dir(paths.recordings_dir()) / "spike-process.wav"
-    bridge = SpotifyBridge()
+    bridge = PlayerBridge()
     state = bridge.current()
     was_playing = bool(state and state.playing)
     toggled = False

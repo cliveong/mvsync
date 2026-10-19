@@ -1,14 +1,14 @@
-"""M2 play: follow loop driving a muted mpv window from the Spotify master clock.
+"""M2 play: follow loop driving a muted mpv window from the player master clock.
 
-The alignment built by ``scan`` maps Spotify positions to video positions;
-this loop polls SMTC at a few hertz, extrapolates the Spotify position between
+The alignment built by ``scan`` maps player positions to video positions;
+this loop polls SMTC at a few hertz, extrapolates the player position between
 updates (SMTC is coarse), and lets the planner decide between pausing, seeking,
 and a small rate nudge. With no url the stored alignment for the current track
 is reused; an unscanned track plays its found MV roughly right away while
 being recorded in the background, so the next listen is fully synced. The loop
 follows playlist transitions the same way: a scanned track swaps in its own
 synced video, an unscanned one falls back to the rough mode. Hotkeys: q quit,
-r resync, [ / ] trim the offset by 50 ms, p toggle Spotify playback. A changed
+r resync, [ / ] trim the offset by 50 ms, p toggle player playback. A changed
 offset is persisted on exit.
 """
 
@@ -34,8 +34,8 @@ from mvsync.match import BACKWARD_JUMP_S, END_EPS_S, FORWARD_JUMP_S
 from mvsync.mpv_ctl import MpvController, MpvError
 from mvsync.mv_audio import fetch_video_mp4, parse_video_id
 from mvsync.mv_search import Candidate, candidate_lines, pick_mv_candidates, prioritize, video_url
+from mvsync.player_smtc import PlayerBridge, PlayerState
 from mvsync.radio import RadioRecording, wait_for_fits
-from mvsync.spotify_smtc import SpotifyBridge, SpotifyState
 from mvsync.sync_planner import PlannerConfig, SyncState, plan, target_video_s
 from mvsync.timeline import Alignment
 
@@ -46,7 +46,7 @@ TRACK_END_EPS_S = 1.0
 QUEUE_END_GRACE_S = 5.0
 MPV_START_TIMEOUT_S = 90.0
 
-HOTKEYS = "q quit | r resync | [ ] offset -/+ 50ms | p spotify play/pause"
+HOTKEYS = "q quit | r resync | [ ] offset -/+ 50ms | p player play/pause"
 
 
 @dataclass(frozen=True)
@@ -132,10 +132,10 @@ def _run_play(
     if log_path is not None:
         print(f"[log] writing {log_path}")
     devlog.log("play_start", url=url, poll_s=poll_s, pick=pick)
-    bridge = SpotifyBridge()
+    bridge = PlayerBridge()
     state = bridge.current()
     if state is None:
-        print("[play] no Spotify session; open the desktop app and start the track")
+        print("[play] no player session; start playback in your media player")
         return 1
     track_id = make_track_id(state.artist, state.title)
     print(f"[play] {state.artist} - {state.title}")
@@ -205,7 +205,7 @@ def _run_play(
 
 
 def _follow(
-    bridge: SpotifyBridge,
+    bridge: PlayerBridge,
     mpv: MpvController,
     track_id: str,
     alignment: Alignment | None,
@@ -216,7 +216,7 @@ def _follow(
     frozen: bool = False,
     keys: Callable[[], str] | None = None,
 ) -> int:
-    """Poll Spotify and drive mpv from the planner; ``keys`` supplies the hotkeys."""
+    """Poll the player and drive mpv from the planner; ``keys`` supplies the hotkeys."""
     config = PlannerConfig()
     store = paths.alignments_dir(root)
     keys = _read_key if keys is None else keys
@@ -236,7 +236,7 @@ def _follow(
             state = bridge.current()
             smtc_ms = round((time.monotonic() - smtc_started) * 1000.0, 1)
             if state is None:
-                print("[play] Spotify session disappeared; stopping")
+                print("[play] player session disappeared; stopping")
                 break
 
             new_track_id = make_track_id(state.artist, state.title)
@@ -436,7 +436,7 @@ def _rough_jump_delta(
 
 
 def _start_track(
-    state: SpotifyState,
+    state: PlayerState,
     mpv: MpvController,
     store: Path,
     root: Path | None,
@@ -445,7 +445,7 @@ def _start_track(
     url: str | None = None,
     announce: bool = True,
 ) -> tuple[Alignment | None, float, RadioRecording | None, bool]:
-    """Play the track Spotify is on now; return its alignment, radio, and freeze flag.
+    """Play the track the player is on now; return its alignment, radio, and freeze flag.
 
     A stored alignment swaps in the synced video right away. Otherwise the
     found MV plays roughly while the track is recorded for the next listen.
@@ -455,7 +455,7 @@ def _start_track(
     """
     track_id = make_track_id(state.artist, state.title)
     if not state.artist.strip() and not state.title.strip():
-        print("[play] Spotify reports no track metadata; waiting for it to update")
+        print("[play] the player reports no track metadata; waiting for it to update")
         _freeze_video(mpv)
         return None, 0.0, None, True
     if url is None:
@@ -478,7 +478,7 @@ def _start_track(
     else:
         print("[play] new track: playing the MV roughly, synced on the next listen")
     if not state.playing:
-        print("[play] Spotify is paused; the first-listen recording starts when playback does")
+        print("[play] the player is paused; the first-listen recording starts when playback does")
     if url is not None:
         candidates = [
             Candidate(video_id=parse_video_id(url), title="", duration_s=None, channel="")
@@ -521,7 +521,7 @@ def _start_track(
 
 
 def _prepare_track(
-    state: SpotifyState,
+    state: PlayerState,
     stored: tuple[Alignment, float, str] | None,
     root: Path | None,
     cancel: threading.Event,
@@ -574,7 +574,7 @@ def _prepare_track(
 
 
 def _begin_track(
-    state: SpotifyState,
+    state: PlayerState,
     mpv: MpvController,
     store: Path,
     root: Path | None,
@@ -582,7 +582,7 @@ def _begin_track(
     """Freeze the old video, start recording a first listen, prepare the new video."""
     track_id = make_track_id(state.artist, state.title)
     if not state.artist.strip() and not state.title.strip():
-        print("[play] Spotify reports no track metadata; waiting for it to update")
+        print("[play] the player reports no track metadata; waiting for it to update")
         _freeze_video(mpv)
         return track_id, None, 0.0, None, None
     stored = load_newest_alignment(store, track_id)

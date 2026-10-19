@@ -1,0 +1,106 @@
+"""Tests for the SMTC adapter's defensive handling of missing fields."""
+
+from __future__ import annotations
+
+import datetime
+
+
+def make_bridge(monkeypatch, session):
+    from mvsync import player_smtc
+
+    bridge = player_smtc.PlayerBridge.__new__(player_smtc.PlayerBridge)
+    monkeypatch.setattr(bridge, "_session", lambda: session)
+    return bridge
+
+
+class BlankSession:
+    def try_get_media_properties_async(self):
+        return None
+
+    def get_timeline_properties(self):
+        return None
+
+    def get_playback_info(self):
+        return None
+
+
+def test_current_survives_missing_properties_and_timeline(monkeypatch):
+    bridge = make_bridge(monkeypatch, BlankSession())
+    state = bridge.current()
+    assert state is not None
+    assert state.title == ""
+    assert state.artist == ""
+    assert state.duration_s == 0.0
+    assert state.position_s == 0.0
+    assert not state.playing
+
+
+class FullSession:
+    class Properties:
+        title = "Song"
+        artist = "Artist"
+
+    class Timeline:
+        end_time = datetime.timedelta(seconds=180.0)
+        position = datetime.timedelta(seconds=10.0)
+        last_updated_time = datetime.datetime(2026, 1, 1, 12, 0, 0)
+
+    def try_get_media_properties_async(self):
+        return FullSession.Properties()
+
+    def get_timeline_properties(self):
+        return FullSession.Timeline()
+
+    def get_playback_info(self):
+        return object()
+
+
+def test_current_reads_normal_fields(monkeypatch):
+    from mvsync import player_smtc
+
+    monkeypatch.setattr(player_smtc, "_is_playing", lambda playback: True)
+    bridge = make_bridge(monkeypatch, FullSession())
+    state = bridge.current()
+    assert state is not None
+    assert (state.title, state.artist) == ("Song", "Artist")
+    assert state.duration_s == 180.0
+    assert state.position_s == 10.0
+    assert state.playing is True
+
+
+class FakeSession:
+    def __init__(self, app_id, playing=False):
+        self.source_app_user_model_id = app_id
+        self._playing = playing
+
+    def get_playback_info(self):
+        return self
+
+
+def test_choose_prefers_a_playing_session(monkeypatch):
+    from mvsync import player_smtc
+
+    monkeypatch.setattr(player_smtc, "_is_playing", lambda playback: playback._playing)
+    sessions = [FakeSession("one.exe", playing=False), FakeSession("two.exe", playing=True)]
+    bridge = player_smtc.PlayerBridge.__new__(player_smtc.PlayerBridge)
+    bridge._match = ""
+    assert bridge._choose(sessions).source_app_user_model_id == "two.exe"
+
+
+def test_choose_filters_by_the_configured_match(monkeypatch):
+    from mvsync import player_smtc
+
+    monkeypatch.setattr(player_smtc, "_is_playing", lambda playback: playback._playing)
+    sessions = [FakeSession("browser.exe", playing=True), FakeSession("vlc.exe", playing=False)]
+    bridge = player_smtc.PlayerBridge.__new__(player_smtc.PlayerBridge)
+    bridge._match = "vlc"
+    assert bridge._choose(sessions).source_app_user_model_id == "vlc.exe"
+
+
+def test_choose_returns_none_when_nothing_matches(monkeypatch):
+    from mvsync import player_smtc
+
+    monkeypatch.setattr(player_smtc, "_is_playing", lambda playback: playback._playing)
+    bridge = player_smtc.PlayerBridge.__new__(player_smtc.PlayerBridge)
+    bridge._match = "missing"
+    assert bridge._choose([FakeSession("vlc.exe")]) is None

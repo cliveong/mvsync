@@ -13,9 +13,9 @@ import sys
 from mvsync import paths
 
 MENU = """
-1) doctor            check environment, devices, and the Spotify session
+1) doctor            check environment, devices, and the player session
 2) scan [url] [--pick N]   scan the current track (auto-finds its MV)
-3) play [url] [--pick N]   play synced to Spotify (new tracks sync next time)
+3) play [url] [--pick N]   play synced to the player (new tracks sync next time)
 4) fix             pick the right MV for the current track (opens a window)
 0) quit
 """.strip()
@@ -102,20 +102,20 @@ def doctor() -> int:
         check(tool, found is not None, str(found) if found else "missing; run bootstrap")
 
     try:
-        from mvsync.spotify_smtc import SpotifyBridge
+        from mvsync.player_smtc import PlayerBridge
 
-        bridge = SpotifyBridge()
+        bridge = PlayerBridge()
         state = bridge.current()
         if state is None:
-            check("spotify session", False, "none found; open the Spotify desktop app")
+            check("player session", False, "none found; start playback in your media player")
         else:
             detail = (
                 f"{state.artist} - {state.title} @ {state.position_s:.1f}s, "
                 f"playing={state.playing}"
             )
-            check("spotify session", True, detail)
+            check("player session", True, detail)
     except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
-        check("winsdk / spotify session", False, str(exc))
+        check("winsdk / player session", False, str(exc))
 
     try:
         from mvsync.capture import default_loopback
@@ -210,18 +210,18 @@ def menu() -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mvsync",
-        description="Watch a muted YouTube music video in mpv, synced to lossless Spotify.",
+        description="Watch a muted YouTube music video in mpv, synced to your media player.",
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("gui", help="open the main window (the default with no arguments)")
     subparsers.add_parser("menu", help="open the old console menu")
-    subparsers.add_parser("doctor", help="check environment, devices, and Spotify session")
-    scan = subparsers.add_parser("scan", help="scan the current Spotify track (auto-finds its MV)")
+    subparsers.add_parser("doctor", help="check environment, devices, and player session")
+    scan = subparsers.add_parser("scan", help="scan the current track (auto-finds its MV)")
     scan.add_argument("url", nargs="?", help="youtube url; omit to find the MV automatically")
     scan.add_argument(
         "--pick", type=int, metavar="N", help="use candidate N from the printed search list"
     )
-    play = subparsers.add_parser("play", help="play a music video synced to Spotify")
+    play = subparsers.add_parser("play", help="play a music video synced to the player")
     play.add_argument("url", nargs="?", help="youtube url; omit to reuse the stored alignment")
     play.add_argument(
         "--pick",

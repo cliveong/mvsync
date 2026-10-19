@@ -7,7 +7,7 @@ import time
 from mvsync import paths
 from mvsync.align_store import make_track_id, save_alignment
 from mvsync.mv_search import Candidate
-from mvsync.spotify_smtc import SpotifyState
+from mvsync.player_smtc import PlayerState
 from mvsync.timeline import Alignment, Anchor
 
 
@@ -56,7 +56,7 @@ class FakeMpv:
 
 
 class FakeBridge:
-    def __init__(self, states: list[SpotifyState | None]):
+    def __init__(self, states: list[PlayerState | None]):
         self._states = list(states)
 
     def current(self):
@@ -94,8 +94,8 @@ def make_state(
     position_s: float = 30.0,
     playing: bool = True,
     updated_epoch_s: float | None = None,
-) -> SpotifyState:
-    return SpotifyState(
+) -> PlayerState:
+    return PlayerState(
         artist=artist,
         title=title,
         duration_s=duration_s,
@@ -136,7 +136,7 @@ def test_stored_fetch_failure_freezes_and_keeps_session(tmp_path, monkeypatch):
     save_stored(tmp_path, "vidx", track_id)
     mpv = FakeMpv()
     monkeypatch.setattr(sr, "MpvController", lambda root: mpv)
-    monkeypatch.setattr(sr, "SpotifyBridge", lambda: FakeBridge([state, state, state]))
+    monkeypatch.setattr(sr, "PlayerBridge", lambda: FakeBridge([state, state, state]))
     monkeypatch.setattr(sr, "fetch_video_mp4", boom_fetch)
 
     rc = sr.run_play(None, root=tmp_path, poll_s=0.01)
@@ -356,7 +356,7 @@ def test_run_play_releases_the_session_lock(tmp_path, monkeypatch):
 
     state = make_state()
     monkeypatch.setattr(sr, "MpvController", lambda root: FakeMpv())
-    monkeypatch.setattr(sr, "SpotifyBridge", lambda: FakeBridge([state]))
+    monkeypatch.setattr(sr, "PlayerBridge", lambda: FakeBridge([state]))
     monkeypatch.setattr(
         sr, "pick_mv_candidates", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("x"))
     )
@@ -376,7 +376,7 @@ def test_play_reads_hotkeys_from_the_injected_source(tmp_path, monkeypatch):
     monkeypatch.setattr(sr, "MpvController", lambda root: FakeMpv())
     # One state is enough: _follow polls keys() at the top of the loop, before it reads
     # the session, so the injected "q" ends the run before the vanished session does.
-    monkeypatch.setattr(sr, "SpotifyBridge", lambda: FakeBridge([make_state()]))
+    monkeypatch.setattr(sr, "PlayerBridge", lambda: FakeBridge([make_state()]))
     # The real search raises instead of returning an empty list, which _start_track needs.
     monkeypatch.setattr(
         sr, "pick_mv_candidates", lambda *a, **k: [Candidate("vid1", "t", 180.0, "c")]

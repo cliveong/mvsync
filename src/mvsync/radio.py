@@ -27,7 +27,7 @@ from mvsync.match import (
 )
 from mvsync.mv_audio import wav_duration_s
 from mvsync.mv_search import Candidate
-from mvsync.spotify_smtc import SpotifyState
+from mvsync.player_smtc import PlayerState
 
 PAUSE_DIRTY_S = 2.0
 COVERAGE_SLACK_S = 5.0
@@ -160,7 +160,7 @@ class RadioRecording:
             offset_s=round(self._offset_s, 2),
         )
 
-    def observe(self, state: SpotifyState, now: float) -> None:
+    def observe(self, state: PlayerState, now: float) -> None:
         if self._finished or not self._started:
             return
         self._watch.observe(state.position_s, state.updated_epoch_s, state.playing, now)

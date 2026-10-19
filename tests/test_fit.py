@@ -7,8 +7,8 @@ import pytest
 from mvsync.align import looks_sane
 from mvsync.match import align_against_candidates
 from mvsync.mv_search import Candidate
+from mvsync.player_smtc import PlayerState
 from mvsync.radio import RadioWatch, _capture_lost_audio
-from mvsync.spotify_smtc import SpotifyState
 from mvsync.sync_runtime import _rough_jump_delta
 from mvsync.timeline import Alignment, Anchor, SkipSpan
 
@@ -146,8 +146,8 @@ def test_align_against_candidates_gives_up(tmp_path):
     assert result is None
 
 
-def make_state(position_s: float, updated_epoch_s: float, playing: bool) -> SpotifyState:
-    return SpotifyState(
+def make_state(position_s: float, updated_epoch_s: float, playing: bool) -> PlayerState:
+    return PlayerState(
         title="title",
         artist="artist",
         duration_s=200.0,
@@ -411,7 +411,7 @@ def test_radio_recording_ignores_observations_before_start(tmp_path):
         root=tmp_path,
     )
     assert not radio.started
-    state = SpotifyState(
+    state = PlayerState(
         title="s",
         artist="a",
         duration_s=100.0,

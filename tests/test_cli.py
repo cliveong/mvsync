@@ -6,7 +6,7 @@ import sys
 import types
 from pathlib import Path
 
-from mvsync import capture, cli, config, paths, spotify_smtc
+from mvsync import capture, cli, config, paths, player_smtc
 
 
 class _FakeBridge:
@@ -37,7 +37,7 @@ def _fake_doctor(
 ) -> None:
     from mvsync import capture_proc
 
-    monkeypatch.setattr(spotify_smtc, "SpotifyBridge", _FakeBridge)
+    monkeypatch.setattr(player_smtc, "PlayerBridge", _FakeBridge)
     monkeypatch.setattr(capture, "default_loopback", lambda: _FakeLoopback())
     monkeypatch.setattr(paths, "find_tool", _fake_tool)
     monkeypatch.setattr(config, "load_capture_mode", lambda root=None: mode)

@@ -18,8 +18,8 @@ from mvsync.align_store import load_newest_alignment, make_track_id
 from mvsync.gui_console import KeySource, LogSink
 from mvsync.mv_audio import parse_video_id
 from mvsync.mv_search import Candidate, pick_mv_candidates, prioritize, video_url
+from mvsync.player_smtc import PlayerBridge, PlayerState
 from mvsync.scan_runtime import ScanAborted, ScanResult, scan_with_candidates
-from mvsync.spotify_smtc import SpotifyBridge, SpotifyState
 
 MAIN_ACTIONS = ("play", "scan", "fix", "doctor")
 ACTION_LABELS = {"play": "Play", "scan": "Scan", "fix": "Fix MV", "doctor": "Doctor"}
@@ -95,7 +95,7 @@ class MainWindow(tk.Tk):
         self.title("mvsync")
         self.minsize(680, 560)
         self._root_dir = root
-        self._state: SpotifyState | None = None
+        self._state: PlayerState | None = None
         self._keys = KeySource()
         self._busy = False
         self._locked = False
@@ -117,7 +117,7 @@ class MainWindow(tk.Tk):
     def _build_ui(self) -> None:
         top = ttk.Frame(self, padding=8)
         top.pack(fill="x")
-        self._track_label = ttk.Label(top, text="no Spotify session")
+        self._track_label = ttk.Label(top, text="no player session")
         self._track_label.pack(side="left", fill="x", expand=True)
         ttk.Button(top, text="Refresh track", command=self.refresh_track).pack(side="right")
 
@@ -220,7 +220,7 @@ class MainWindow(tk.Tk):
 
         A widget that consumes the key itself (the URL entry) keeps it: Tk runs the
         toplevel binding after the class binding, so typing there would otherwise
-        quit play, resync, toggle Spotify, or trim the offset.
+        quit play, resync, toggle the player, or trim the offset.
         """
         if event.widget in self._key_consumers:
             return None
@@ -237,14 +237,14 @@ class MainWindow(tk.Tk):
 
     def refresh_track(self) -> None:
         try:
-            self._state = SpotifyBridge().current()
+            self._state = PlayerBridge().current()
         except RuntimeError as exc:
             self._state = None
             self._log(str(exc))
         state = self._state
         self._track_label.configure(
             text=(
-                "no Spotify session"
+                "no player session"
                 if state is None
                 else f"{state.artist} - {state.title} ({format_length(state.duration_s)})"
             )
@@ -360,7 +360,7 @@ class MainWindow(tk.Tk):
             ]
         state = self._state
         if state is None:
-            raise RuntimeError("no Spotify session; open the desktop app and start the track")
+            raise RuntimeError("no player session; start playback in your media player")
         return pick_mv_candidates(state.artist, state.title, state.duration_s, root=self._root_dir)
 
     def doctor(self) -> None:
@@ -395,13 +395,13 @@ class MainWindow(tk.Tk):
 
 
 class FixerWindow(tk.Tk):
-    """Pick the right MV for the current Spotify track and rebuild its map."""
+    """Pick the right MV for the current player track and rebuild its map."""
 
     def __init__(self, root: Path | None = None) -> None:
         super().__init__()
         self.title("mvsync - Fix MV")
         self._root_dir = root
-        self._state: SpotifyState | None = None
+        self._state: PlayerState | None = None
         self._track_id: str | None = None
         self._candidates: list[Candidate] = []
         self._in_use_video_id: str | None = None
@@ -416,7 +416,7 @@ class FixerWindow(tk.Tk):
     def _build_ui(self) -> None:
         top = ttk.Frame(self, padding=8)
         top.pack(fill="x")
-        self._track_label = ttk.Label(top, text="no Spotify session")
+        self._track_label = ttk.Label(top, text="no player session")
         self._track_label.pack(side="left", fill="x", expand=True)
         self._refresh_button = ttk.Button(
             top, text="Refresh track", command=self.refresh_track
@@ -499,7 +499,7 @@ class FixerWindow(tk.Tk):
 
     def refresh_track(self) -> None:
         try:
-            self._state = SpotifyBridge().current()
+            self._state = PlayerBridge().current()
         except RuntimeError as exc:
             self._state = None
             self._log(str(exc))
@@ -511,7 +511,7 @@ class FixerWindow(tk.Tk):
             self._in_use_video_id = None
         self._track_label.configure(
             text=(
-                "no Spotify session"
+                "no player session"
                 if state is None
                 else f"{state.artist} - {state.title} ({format_length(state.duration_s)})"
             )
@@ -582,7 +582,7 @@ class FixerWindow(tk.Tk):
         question = (
             f"Rebuild the map for {state.artist} - {state.title} using "
             f"{candidate.title or candidate.video_id}?\n\n"
-            f"Spotify pauses, rewinds, and plays the track once "
+            f"The player pauses, rewinds, and plays the track once "
             f"({format_length(state.duration_s)}); keep it playing untouched until it ends."
         )
         if not messagebox.askyesno("mvsync", question):

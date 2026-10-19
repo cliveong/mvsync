@@ -1,6 +1,6 @@
-"""M1 scan: record one Spotify track end to end and build the alignment map.
+"""M1 scan: record one player track end to end and build the alignment map.
 
-The flow drives Spotify over SMTC: pause, rewind to the start, record the
+The flow drives the player over SMTC: pause, rewind to the start, record the
 system output (loopback) while the track plays through, abort cleanly on
 pause/seek/track change, trim the pre-roll silence, and run the DSP alignment
 of the recording against the cached MV audio. The result is saved under
@@ -29,8 +29,8 @@ from mvsync.clock import extrapolate
 from mvsync.match import BACKWARD_JUMP_S, END_EPS_S, FORWARD_JUMP_S, align_against_candidates
 from mvsync.mv_audio import fetch_video_mp4, parse_video_id, wav_duration_s
 from mvsync.mv_search import Candidate, candidate_lines, pick_mv_candidates, prioritize, video_url
+from mvsync.player_smtc import PlayerBridge, PlayerState
 from mvsync.radio import _discard
-from mvsync.spotify_smtc import SpotifyBridge, SpotifyState
 
 POLL_S = 0.25
 TRIM_SAFETY_S = 0.05
@@ -72,12 +72,12 @@ def run_scan(url: str | None, *, root: Path | None = None, pick: int | None = No
 def _run_scan(
     url: str | None, *, root: Path | None = None, pick: int | None = None
 ) -> None:
-    bridge = SpotifyBridge()
+    bridge = PlayerBridge()
     state = bridge.current()
     if state is None:
-        raise ScanAborted("no Spotify session; open the desktop app and start the track")
+        raise ScanAborted("no player session; start playback in your media player")
     if not state.artist.strip() and not state.title.strip():
-        raise ScanAborted("Spotify reports no track metadata; start the track first")
+        raise ScanAborted("the player reports no track metadata; start the track first")
     track_id = make_track_id(state.artist, state.title)
     print(f"[scan] track: {state.artist} - {state.title} ({state.duration_s:.1f}s)")
     if url:
@@ -119,27 +119,27 @@ def _run_scan(
     )
 
 
-def _pause_and_rewind(bridge: SpotifyBridge, on_progress: Callable[[str], None]) -> float:
+def _pause_and_rewind(bridge: PlayerBridge, on_progress: Callable[[str], None]) -> float:
     """Pause playback, rewind to the start, and report the resulting position."""
     state = bridge.current()
     if state is not None and state.playing:
-        print("[scan] pausing Spotify")
+        print("[scan] pausing the player")
         on_progress("pausing")
         bridge.toggle_play_pause()
         if not _wait_until(lambda: _playback_stopped(bridge), 3.0):
-            raise ScanAborted("could not pause Spotify")
+            raise ScanAborted("could not pause the player")
     bridge.seek(0.0)
     position = _wait_start_position(bridge)
     if position > 2.0:
-        print(f"[scan] warning: Spotify reports {position:.1f}s, scanning from there")
+        print(f"[scan] warning: the player reports {position:.1f}s, scanning from there")
     return position
 
 
 def _record_and_fit(
     candidates: list[Candidate],
     *,
-    bridge: SpotifyBridge,
-    state: SpotifyState,
+    bridge: PlayerBridge,
+    state: PlayerState,
     track_id: str,
     position: float,
     root: Path | None,
@@ -160,7 +160,7 @@ def _record_and_fit(
             raise ScanAborted("the loopback device did not start")
         play_press = time.time()
         bridge.toggle_play_pause()
-        print("[scan] playing; press nothing in Spotify until the track ends")
+        print("[scan] playing; press nothing in the player until the track ends")
         try:
             _record_until_end(bridge, track_id, state.duration_s, play_press)
         finally:
@@ -246,10 +246,10 @@ def scan_with_candidates(
     notify = on_progress or (lambda message: None)
     session.claim(root)
     try:
-        bridge = SpotifyBridge()
+        bridge = PlayerBridge()
         state = bridge.current()
         if state is None or (not state.artist.strip() and not state.title.strip()):
-            raise ScanAborted("no Spotify session with track metadata")
+            raise ScanAborted("no player session with track metadata")
         track_id = make_track_id(state.artist, state.title)
         position = _pause_and_rewind(bridge, notify)
         rec_path = paths.recordings_dir(root) / f"{candidates[0].video_id}__{track_id}.wav"
@@ -306,12 +306,12 @@ def _wait_until(predicate: Callable[[], bool], timeout_s: float) -> bool:
     return False
 
 
-def _playback_stopped(bridge: SpotifyBridge) -> bool:
+def _playback_stopped(bridge: PlayerBridge) -> bool:
     state = bridge.current()
     return state is not None and not state.playing
 
 
-def _wait_start_position(bridge: SpotifyBridge) -> float:
+def _wait_start_position(bridge: PlayerBridge) -> float:
     position = 0.0
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
@@ -325,7 +325,7 @@ def _wait_start_position(bridge: SpotifyBridge) -> float:
 
 
 def _record_until_end(
-    bridge: SpotifyBridge, track_id: str, duration_s: float, play_press: float
+    bridge: PlayerBridge, track_id: str, duration_s: float, play_press: float
 ) -> None:
     """Watch the track play through, aborting on pauses, seeks, or track changes.
 
@@ -347,7 +347,7 @@ def _record_until_end(
             raise ScanAborted("timed out waiting for the track to finish")
         state = bridge.current()
         if state is None:
-            raise ScanAborted("Spotify session disappeared while recording")
+            raise ScanAborted("player session disappeared while recording")
         if make_track_id(state.artist, state.title) != track_id:
             if max_position >= duration_s - END_EPS_S:
                 return
@@ -360,9 +360,9 @@ def _record_until_end(
                 # before the metadata switches, so ignore jumps there.
                 near_end = max_position >= duration_s - END_EPS_S
                 if advance < -BACKWARD_JUMP_S and not near_end:
-                    raise ScanAborted("Spotify moved backwards; scan the track without seeking")
+                    raise ScanAborted("the player moved backwards; scan the track without seeking")
                 if advance > elapsed + FORWARD_JUMP_S and not near_end:
-                    raise ScanAborted("Spotify jumped forward; scan the track without seeking")
+                    raise ScanAborted("the player jumped forward; scan the track without seeking")
             last_raw = state.position_s
             last_epoch = state.updated_epoch_s
             saw_stopped = False
@@ -382,5 +382,5 @@ def _record_until_end(
                     return
                 raise ScanAborted("playback stopped before the track ended; nothing was saved")
             elif not started and now - play_press > START_GRACE_S:
-                raise ScanAborted("playback did not start; check the Spotify window")
+                raise ScanAborted("playback did not start; check the player window")
         time.sleep(POLL_S)

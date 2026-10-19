@@ -261,7 +261,7 @@ watched = [
     "mvsync.sync_runtime",
     "mvsync.scan_runtime",
     "mvsync.capture",
-    "mvsync.spotify_smtc",
+    "mvsync.player_smtc",
 ]
 loaded = [
     name
@@ -587,7 +587,7 @@ def test_lock_status_names_the_pid_and_the_way_out():
 def test_refreshing_the_track_re_reads_the_lock(tmp_path, monkeypatch):
     from mvsync import gui, session
 
-    monkeypatch.setattr(gui, "SpotifyBridge", FakeBridge)
+    monkeypatch.setattr(gui, "PlayerBridge", FakeBridge)
     monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
     window = lock_stand_in(tmp_path)
 

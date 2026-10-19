@@ -1,7 +1,9 @@
-"""Windows SMTC adapter: observe and control the Spotify desktop client.
+"""Windows SMTC adapter: observe and control any media player session.
 
 Uses the Windows.Media.Control WinRT API, the same session that feeds the
-media-key flyout. No Spotify API, no cookies, no account access.
+media-key flyout. No Spotify API, no cookies, no account access. By default
+the first playing session is followed; a configured match (an app id
+substring) pins the bridge to one player.
 """
 
 from __future__ import annotations
@@ -10,14 +12,24 @@ import asyncio
 import time
 from dataclasses import dataclass
 
+from mvsync import config
+
 
 @dataclass(frozen=True)
-class SpotifyState:
+class PlayerState:
     title: str
     artist: str
     duration_s: float
     position_s: float
     updated_epoch_s: float
+    playing: bool
+
+
+@dataclass(frozen=True)
+class PlayerSession:
+    app_id: str
+    title: str
+    artist: str
     playing: bool
 
 
@@ -60,10 +72,10 @@ def _is_playing(playback_info) -> bool:
     return playback_info.playback_status == Status.PLAYING
 
 
-class SpotifyBridge:
+class PlayerBridge:
     """Thin adapter so the sync runtime depends on our API, not winsdk."""
 
-    def __init__(self) -> None:
+    def __init__(self, match: str | None = None) -> None:
         try:
             from winsdk.windows.media.control import (
                 GlobalSystemMediaTransportControlsSessionManager as SessionManager,
@@ -71,25 +83,59 @@ class SpotifyBridge:
         except ImportError as exc:
             raise RuntimeError("winsdk is not installed; run bootstrap.py") from exc
         self._manager = _resolve(SessionManager.request_async())
+        self._match = config.load_player() if match is None else match
+
+    def _sessions(self) -> list:
+        return list(self._manager.get_sessions())
+
+    def _choose(self, sessions: list):
+        if self._match:
+            wanted = self._match.lower()
+            for session in sessions:
+                app_id = (session.source_app_user_model_id or "").lower()
+                if wanted in app_id:
+                    return session
+            return None
+        playing = None
+        for session in sessions:
+            playback = session.get_playback_info()
+            if playback is not None and _is_playing(playback):
+                playing = session
+                break
+        if playing is not None:
+            return playing
+        return sessions[0] if sessions else None
 
     def _session(self):
-        for session in self._manager.get_sessions():
-            app_id = (session.source_app_user_model_id or "").lower()
-            if "spotify" in app_id:
-                return session
-        return None
+        return self._choose(self._sessions())
 
     def session_available(self) -> bool:
         return self._session() is not None
 
-    def current(self) -> SpotifyState | None:
+    def sessions(self) -> list[PlayerSession]:
+        """Every SMTC session with its metadata, for the player picker."""
+        result: list[PlayerSession] = []
+        for session in self._sessions():
+            properties = _resolve(session.try_get_media_properties_async())
+            playback = session.get_playback_info()
+            result.append(
+                PlayerSession(
+                    app_id=session.source_app_user_model_id or "",
+                    title=(properties.title or "") if properties is not None else "",
+                    artist=(properties.artist or "") if properties is not None else "",
+                    playing=_is_playing(playback) if playback is not None else False,
+                )
+            )
+        return result
+
+    def current(self) -> PlayerState | None:
         session = self._session()
         if session is None:
             return None
         properties = _resolve(session.try_get_media_properties_async())
         timeline = session.get_timeline_properties()
         playback = session.get_playback_info()
-        return SpotifyState(
+        return PlayerState(
             title=(properties.title or "") if properties is not None else "",
             artist=(properties.artist or "") if properties is not None else "",
             duration_s=_seconds(timeline.end_time) if timeline is not None else 0.0,
