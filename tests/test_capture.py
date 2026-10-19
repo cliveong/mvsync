@@ -88,8 +88,8 @@ def test_process_recorder_keeps_its_pid():
     assert recorder._pid == 4242
 
 
-def test_capture_mode_defaults_to_spotify(tmp_path):
-    assert config.load_capture_mode(tmp_path) == "spotify"
+def test_capture_mode_defaults_to_process(tmp_path):
+    assert config.load_capture_mode(tmp_path) == "process"
 
 
 def test_capture_mode_round_trips(tmp_path):
@@ -100,7 +100,15 @@ def test_capture_mode_round_trips(tmp_path):
 def test_capture_mode_ignores_malformed_json(tmp_path):
     paths.ensure_dir(tmp_path / "data")
     (tmp_path / "data" / "config.json").write_text("{not json", encoding="utf-8")
-    assert config.load_capture_mode(tmp_path) == "spotify"
+    assert config.load_capture_mode(tmp_path) == "process"
+
+
+def test_stored_spotify_mode_loads_as_process(tmp_path):
+    paths.ensure_dir(tmp_path / "data")
+    (tmp_path / "data" / "config.json").write_text(
+        '{"capture_mode": "spotify"}', encoding="utf-8"
+    )
+    assert config.load_capture_mode(tmp_path) == "process"
 
 
 def test_set_capture_mode_rejects_unknown_values(tmp_path):
@@ -127,7 +135,7 @@ def test_make_recorder_falls_back_when_spotify_is_missing(tmp_path, capsys, monk
 
     monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
     monkeypatch.setattr(capture_proc, "resolve_spotify_pid", lambda: None)
-    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="spotify")
     assert isinstance(recorder, capture.LoopbackRecorder)
     assert "Spotify audio session not found; using device loopback" in capsys.readouterr().out
 
@@ -144,7 +152,7 @@ def test_make_recorder_falls_back_when_process_capture_is_unimportable(
 
     monkeypatch.delattr(mvsync, "capture_proc", raising=False)
     monkeypatch.setitem(sys.modules, "mvsync.capture_proc", None)
-    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="spotify")
     assert isinstance(recorder, capture.LoopbackRecorder)
     assert "process capture unavailable" in capsys.readouterr().out
 
@@ -155,7 +163,7 @@ def test_make_recorder_falls_back_when_process_capture_is_unsupported(
     from mvsync import capture_proc
 
     monkeypatch.setattr(capture_proc, "is_supported", lambda: False)
-    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="spotify")
     assert isinstance(recorder, capture.LoopbackRecorder)
     assert "needs Windows 10 build 20348" in capsys.readouterr().out
 
@@ -171,7 +179,7 @@ def test_make_recorder_uses_the_process_backend(tmp_path, monkeypatch):
 
     monkeypatch.setattr(capture_proc, "is_supported", lambda: True)
     monkeypatch.setattr(capture_proc, "resolve_spotify_pid", lambda: 4242)
-    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path)
+    recorder = capture.make_recorder(tmp_path / "a.wav", root=tmp_path, mode="spotify")
     assert isinstance(recorder, capture.ProcessLoopbackRecorder)
     assert recorder._pid == 4242
 
