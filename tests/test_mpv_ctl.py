@@ -21,6 +21,7 @@ def test_start_passes_keep_open(monkeypatch, tmp_path):
 
     assert captured["keep_open"] is True
     assert captured["auto_window_resize"] is False
+    assert captured["keepaspect_window"] is False
 
 
 def test_eof_reached_reads_the_property(tmp_path):

@@ -46,6 +46,7 @@ class MpvController:
             mute=True,
             terminal="no",
             auto_window_resize=False,
+            keepaspect_window=False,
             **extra_args,
         )
 
