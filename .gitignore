@@ -11,3 +11,9 @@ tools/
 
 # Recordings, PCM caches, alignment data (recreated on demand)
 data/
+
+# Developer-only material (not part of the public tree)
+requirements.lock
+docs/superpowers/
+spikes/
+.superpowers/
