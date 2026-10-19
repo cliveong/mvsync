@@ -46,7 +46,10 @@ def fetch_video_wav(video_url: str, *, root: Path | None = None) -> Path:
     ytdlp = paths.find_tool("yt-dlp", root)
     ffmpeg = paths.find_tool("ffmpeg", root)
     if ytdlp is None or ffmpeg is None:
-        raise RuntimeError("yt-dlp and ffmpeg are required; run bootstrap.py first")
+        raise RuntimeError(
+            "yt-dlp and ffmpeg are required; install yt-dlp from "
+            "https://github.com/yt-dlp/yt-dlp/releases"
+        )
 
     started = time.monotonic()
     part = cache / f"{video_id}.part.wav"
@@ -126,7 +129,9 @@ def fetch_video_mp4(video_url: str, *, root: Path | None = None) -> Path:
 
     ytdlp = paths.find_tool("yt-dlp", root)
     if ytdlp is None:
-        raise RuntimeError("yt-dlp is required; run bootstrap.py first")
+        raise RuntimeError(
+            "yt-dlp is required; install it from https://github.com/yt-dlp/yt-dlp/releases"
+        )
 
     started = time.monotonic()
     part_template = cache / f"{video_id}.part.%(ext)s"

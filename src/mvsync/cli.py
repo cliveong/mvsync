@@ -109,7 +109,12 @@ def doctor() -> int:
 
     for tool in ("yt-dlp", "mpv", "ffmpeg", "ffprobe"):
         found = paths.find_tool(tool)
-        check(tool, found is not None, str(found) if found else "missing; run bootstrap")
+        if found is not None:
+            check(tool, True, str(found))
+        elif tool == "yt-dlp":
+            check(tool, False, "missing; install it from https://github.com/yt-dlp/yt-dlp/releases")
+        else:
+            check(tool, False, "missing; run bootstrap")
 
     try:
         from mvsync.player_smtc import PlayerBridge

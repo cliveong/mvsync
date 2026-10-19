@@ -6,8 +6,8 @@ Idempotent: safe to run on every launch. It:
 
 1. Ensures .venv exists and is healthy (recreates it when broken).
 2. Installs dependencies whenever the requirement files change (hash-marked).
-3. Resolves external tools (yt-dlp, mpv, ffmpeg): project tools/ first, then
-   PATH, downloading portable copies into tools/ when they are missing.
+3. Resolves external tools: yt-dlp is installed by the user (it updates often),
+   while mpv and ffmpeg download portable copies into tools/ when missing.
 4. Writes a project-local mpv config so your global mpv setup never leaks in.
 
 Usage:
@@ -26,6 +26,7 @@ import subprocess
 import sys
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -37,7 +38,14 @@ VENV_DIR = ROOT / ".venv"
 VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
 DEPS_MARKER = VENV_DIR / ".deps-ok"
 REQUIREMENTS = ("requirements.txt", "requirements-dev.txt")
-YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+FFMPEG_URL = (
+    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/"
+    "ffmpeg-master-latest-win64-gpl.zip"
+)
+YTDLP_HINT = (
+    "yt-dlp is missing. Install it with: winget install yt-dlp.yt-dlp, "
+    "or download it from https://github.com/yt-dlp/yt-dlp/releases"
+)
 MPV_RSS_URL = "https://sourceforge.net/projects/mpv-player-windows/rss?path=/release"
 USER_AGENT = "mvsync-bootstrap"
 
@@ -136,18 +144,6 @@ def download(url: str, dest: Path) -> None:
     os.replace(part, dest)
 
 
-def ensure_ytdlp(check_only: bool = False) -> Path | None:
-    existing = paths.find_tool("yt-dlp", ROOT)
-    if existing:
-        return existing
-    if check_only:
-        return None
-    log("downloading portable yt-dlp.exe into tools/")
-    dest = paths.tools_dir(ROOT) / "yt-dlp.exe"
-    download(YTDLP_URL, dest)
-    return dest
-
-
 def latest_mpv_url() -> str:
     request = urllib.request.Request(MPV_RSS_URL, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=60) as response:
@@ -193,13 +189,44 @@ def ensure_mpv(check_only: bool = False) -> Path | None:
         return None
 
 
+def extract_ffmpeg(archive: Path, target_dir: Path) -> Path | None:
+    """Extract ffmpeg.exe and ffprobe.exe from a zip into target_dir."""
+    with zipfile.ZipFile(archive) as zipped:
+        names = zipped.namelist()
+        ffmpeg_name = next((name for name in names if name.endswith("ffmpeg.exe")), None)
+        ffprobe_name = next((name for name in names if name.endswith("ffprobe.exe")), None)
+        if ffmpeg_name is None or ffprobe_name is None:
+            return None
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for member, name in ((ffmpeg_name, "ffmpeg.exe"), (ffprobe_name, "ffprobe.exe")):
+            with zipped.open(member) as source, open(target_dir / name, "wb") as dest:
+                shutil.copyfileobj(source, dest)
+    return target_dir / "ffmpeg.exe"
+
+
 def ensure_ffmpeg(check_only: bool = False) -> Path | None:
     tool = paths.find_tool("ffmpeg", ROOT)
-    if tool:
+    probe = paths.find_tool("ffprobe", ROOT)
+    if tool and probe:
         return tool
-    if not check_only:
-        log("ffmpeg missing; install with: winget install Gyan.FFmpeg")
-    return None
+    if check_only:
+        return None
+    log("ffmpeg not found; downloading portable build into tools/ffmpeg")
+    try:
+        archive = paths.tools_dir(ROOT) / ".download" / "ffmpeg.zip"
+        download(FFMPEG_URL, archive)
+        extracted = extract_ffmpeg(archive, paths.tools_dir(ROOT) / "ffmpeg" / "bin")
+        if extracted is None:
+            raise RuntimeError("archive contains no ffmpeg.exe/ffprobe.exe")
+        archive.unlink(missing_ok=True)
+        return extracted
+    except Exception as exc:  # noqa: BLE001 - report and continue with a warning
+        log(f"ffmpeg download failed: {exc}")
+        log(
+            "install ffmpeg manually (winget install Gyan.FFmpeg) or drop ffmpeg.exe "
+            "and ffprobe.exe into tools\\ffmpeg\\bin\\"
+        )
+        return None
 
 
 def ensure_mpv_config(ytdlp: Path | None) -> Path:
@@ -243,13 +270,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         python = ensure_venv()
         ensure_deps(python, args.force_deps)
-        ytdlp = None
+        ytdlp = paths.find_tool("yt-dlp", ROOT)
+        if ytdlp is None:
+            log(YTDLP_HINT)
         mpv = None
         if not args.skip_tools:
-            ytdlp = ensure_ytdlp()
             mpv = ensure_mpv()
             ensure_mpv_config(ytdlp)
-        ffmpeg = ensure_ffmpeg()
+        ffmpeg = ensure_ffmpeg(check_only=args.skip_tools)
         ready = all((ytdlp, mpv, ffmpeg))
         log("ready" if ready else "ready with warnings (see above)")
         return 0

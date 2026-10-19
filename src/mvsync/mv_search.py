@@ -95,7 +95,9 @@ def parse_search_output(text: str) -> list[Candidate]:
 def search_candidates(query: str, *, root: Path | None = None) -> list[Candidate]:
     ytdlp = paths.find_tool("yt-dlp", root)
     if ytdlp is None:
-        raise RuntimeError("yt-dlp is required; run bootstrap.py first")
+        raise RuntimeError(
+            "yt-dlp is required; install it from https://github.com/yt-dlp/yt-dlp/releases"
+        )
     started = time.monotonic()
     try:
         proc = subprocess.run(
