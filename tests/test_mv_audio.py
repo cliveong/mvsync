@@ -40,3 +40,35 @@ def test_fetch_video_wav_reuses_cache(tmp_path):
     cached = cache / "jNQXAC9IVRw.wav"
     write_wav(cached, frames=1000)
     assert mv_audio.fetch_video_wav("https://youtu.be/jNQXAC9IVRw", root=tmp_path) == cached
+
+
+def test_fetch_video_mp4_passes_the_resolved_ffmpeg_to_ytdlp(tmp_path, monkeypatch):
+    cache = tmp_path / "data" / "cache"
+    cache.mkdir(parents=True)
+    ytdlp = tmp_path / "tools" / "yt-dlp.exe"
+    ffmpeg = tmp_path / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
+    ytdlp.parent.mkdir(parents=True)
+    ytdlp.write_bytes(b"x")
+    ffmpeg.parent.mkdir(parents=True)
+    ffmpeg.write_bytes(b"x")
+
+    monkeypatch.setattr(
+        mv_audio.paths,
+        "find_tool",
+        lambda name, root=None: {"yt-dlp": ytdlp, "ffmpeg": ffmpeg}[name],
+    )
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        (cache / "jNQXAC9IVRw.part.mkv").write_bytes(b"x" * 1_000_001)
+        return type("Process", (), {"returncode": 0})()
+
+    monkeypatch.setattr(mv_audio.subprocess, "run", fake_run)
+
+    result = mv_audio.fetch_video_mp4("https://youtu.be/jNQXAC9IVRw", root=tmp_path)
+
+    assert result == cache / "jNQXAC9IVRw.mkv"
+    assert "--ffmpeg-location" in calls[0]
+    location = calls[0].index("--ffmpeg-location")
+    assert calls[0][location + 1] == str(ffmpeg)

@@ -133,22 +133,24 @@ def fetch_video_mp4(video_url: str, *, root: Path | None = None) -> Path:
             "yt-dlp is required; install it from https://github.com/yt-dlp/yt-dlp/releases"
         )
 
+    ffmpeg = paths.find_tool("ffmpeg", root)
     started = time.monotonic()
     part_template = cache / f"{video_id}.part.%(ext)s"
+    command = [
+        str(ytdlp),
+        "-f",
+        VIDEO_FORMAT,
+        "--merge-output-format",
+        "mkv",
+        "--no-playlist",
+        "--no-progress",
+    ]
+    if ffmpeg is not None:
+        command.extend(["--ffmpeg-location", str(ffmpeg)])
+    command.extend(["-o", str(part_template), video_url])
     with tempfile.TemporaryFile() as ytdlp_err:
         proc = subprocess.run(
-            [
-                str(ytdlp),
-                "-f",
-                VIDEO_FORMAT,
-                "--merge-output-format",
-                "mkv",
-                "--no-playlist",
-                "--no-progress",
-                "-o",
-                str(part_template),
-                video_url,
-            ],
+            command,
             stdout=subprocess.DEVNULL,
             stderr=ytdlp_err,
         )
