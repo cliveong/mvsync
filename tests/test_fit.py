@@ -331,6 +331,21 @@ def test_session_claim_refuses_live_lock(tmp_path, monkeypatch):
         session.claim(tmp_path)
 
 
+def test_session_claim_does_not_overwrite_a_lock_that_appeared_during_the_probe(
+    tmp_path, monkeypatch
+):
+    from mvsync import session
+
+    monkeypatch.setattr(session, "lock_holder", lambda root=None: 0)
+    monkeypatch.setattr(session, "_pid_alive", lambda pid: True)
+    lock = _write_lock(tmp_path, "424242")
+
+    with pytest.raises(RuntimeError, match="another session"):
+        session.claim(tmp_path)
+
+    assert lock.read_text(encoding="utf-8") == "424242"
+
+
 def test_session_claim_allows_own_pid(tmp_path, monkeypatch):
     import os
 

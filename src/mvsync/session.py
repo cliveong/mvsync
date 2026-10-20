@@ -43,6 +43,13 @@ def lock_refusal_message(pid: int) -> str:
     )
 
 
+def _read_lock_pid(lock: Path) -> int:
+    try:
+        return int(lock.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0
+
+
 def lock_holder(root: Path | None = None) -> int:
     """The live foreign pid holding the lock, or 0 when the lock is free.
 
@@ -50,12 +57,7 @@ def lock_holder(root: Path | None = None) -> int:
     under this process, so counting it would report our own session as foreign.
     """
     lock = _lock_path(root)
-    if not lock.is_file():
-        return 0
-    try:
-        pid = int(lock.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return 0
+    pid = _read_lock_pid(lock)
     if pid and pid != os.getpid() and _pid_alive(pid):
         return pid
     return 0
@@ -69,13 +71,25 @@ def is_locked(root: Path | None = None) -> bool:
 def claim(root: Path | None = None) -> None:
     """Claim the session lock, refusing when another live session holds it."""
     lock = _lock_path(root)
-    pid = lock_holder(root)
-    if pid:
-        devlog.log("lock_refused", pid=pid)
-        raise RuntimeError(lock_refusal_message(pid))
     paths.ensure_dir(lock.parent)
-    lock.write_text(str(os.getpid()), encoding="utf-8")
-    devlog.log("lock_claim", pid=os.getpid())
+    for _ in range(3):
+        try:
+            descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pid = _read_lock_pid(lock)
+            if pid and pid != os.getpid() and _pid_alive(pid):
+                devlog.log("lock_refused", pid=pid)
+                raise RuntimeError(lock_refusal_message(pid)) from None
+            with contextlib.suppress(OSError):
+                lock.unlink()
+            continue
+        try:
+            os.write(descriptor, str(os.getpid()).encode("utf-8"))
+        finally:
+            os.close(descriptor)
+        devlog.log("lock_claim", pid=os.getpid())
+        return
+    raise RuntimeError(f"could not claim the session lock at {lock}")
 
 
 def release(root: Path | None = None) -> None:
