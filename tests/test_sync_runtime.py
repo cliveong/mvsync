@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 from mvsync import paths
@@ -363,6 +364,60 @@ def test_run_play_releases_the_session_lock(tmp_path, monkeypatch):
 
     assert sr.run_play(None, root=tmp_path, poll_s=0.01) == 0
     assert not (paths.data_dir(tmp_path) / "session.lock").exists()
+
+
+def test_run_play_waits_for_background_fits_before_releasing_the_lock(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    state = make_state()
+    events: list[str] = []
+    original_release = sr.session.release
+
+    def record_release(root=None):
+        events.append("release")
+        original_release(root)
+
+    monkeypatch.setattr(sr.session, "release", record_release)
+    monkeypatch.setattr(sr, "wait_for_fits", lambda: events.append("wait"))
+    monkeypatch.setattr(sr, "MpvController", lambda root: FakeMpv())
+    monkeypatch.setattr(sr, "PlayerBridge", lambda: FakeBridge([state]))
+    monkeypatch.setattr(
+        sr,
+        "pick_mv_candidates",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no MV")),
+    )
+
+    assert sr.run_play(None, root=tmp_path, poll_s=0.01, keys=lambda: "") == 0
+    assert events[-2:] == ["wait", "release"]
+
+
+def test_run_play_returns_before_opening_mpv_when_stop_is_requested(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    stop = threading.Event()
+    stop.set()
+    monkeypatch.setattr(
+        sr, "PlayerBridge", lambda: (_ for _ in ()).throw(AssertionError("bridge opened"))
+    )
+    monkeypatch.setattr(
+        sr, "MpvController", lambda root: (_ for _ in ()).throw(AssertionError("mpv opened"))
+    )
+
+    assert sr.run_play(None, root=tmp_path, stop_event=stop) == 0
+
+
+def test_wait_media_loaded_gives_up_when_stop_is_requested():
+    from pathlib import Path
+
+    import mvsync.sync_runtime as sr
+
+    stop = threading.Event()
+    stop.set()
+    mpv = FakeMpv(path="other.mkv", duration=1.0)
+    started = time.monotonic()
+
+    assert sr._wait_media_loaded(mpv, Path("wanted.mkv"), stop_event=stop) is False
+    assert time.monotonic() - started < 1.0
 
 
 def test_play_reads_hotkeys_from_the_injected_source(tmp_path, monkeypatch):

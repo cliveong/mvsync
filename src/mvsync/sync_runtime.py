@@ -105,6 +105,7 @@ def run_play(
     poll_s: float = POLL_S,
     pick: int | None = None,
     keys: Callable[[], str] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> int:
     """Follow the playlist, taking hotkeys from ``keys`` (the console by default)."""
     try:
@@ -114,6 +115,7 @@ def run_play(
             poll_s=poll_s,
             pick=pick,
             keys=_read_key if keys is None else keys,
+            stop_event=stop_event,
         )
     except (RuntimeError, ValueError) as exc:
         print(f"[play] failed: {exc}")
@@ -127,7 +129,10 @@ def _run_play(
     poll_s: float,
     pick: int | None,
     keys: Callable[[], str],
+    stop_event: threading.Event | None = None,
 ) -> int:
+    if stop_event is not None and stop_event.is_set():
+        return 0
     log_path = devlog.configure(root)
     if log_path is not None:
         print(f"[log] writing {log_path}")
@@ -177,15 +182,30 @@ def _run_play(
                 offset_s = 0.0
                 frozen = True
             else:
+                if stop_event is not None and stop_event.is_set():
+                    return 0
                 print("[play] loading the video in mpv (muted)")
                 mpv.load(str(video_file))
-                if not _wait_media_loaded(mpv, video_file):
+                if not _wait_media_loaded(mpv, video_file, stop_event=stop_event):
+                    if stop_event is not None and stop_event.is_set():
+                        return 0
                     print("[play] mpv did not start playback in time")
                     return 1
         else:
             _, _, radio, frozen = _start_track(
-                state, mpv, store, root, pick=pick, url=url, announce=False
+                state,
+                mpv,
+                store,
+                root,
+                pick=pick,
+                url=url,
+                announce=False,
+                stop_event=stop_event,
             )
+        if stop_event is not None and stop_event.is_set():
+            if radio is not None:
+                radio.finish()
+            return 0
         return _follow(
             bridge,
             mpv,
@@ -197,11 +217,12 @@ def _run_play(
             radio=radio,
             frozen=frozen,
             keys=keys,
+            stop_event=stop_event,
         )
     finally:
         mpv.stop()
-        session.release(root)
         wait_for_fits()
+        session.release(root)
 
 
 def _follow(
@@ -215,6 +236,7 @@ def _follow(
     radio: RadioRecording | None = None,
     frozen: bool = False,
     keys: Callable[[], str] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> int:
     """Poll the player and drive mpv from the planner; ``keys`` supplies the hotkeys."""
     config = PlannerConfig()
@@ -230,6 +252,8 @@ def _follow(
     prep: TrackPrep | None = None
     try:
         while True:
+            if stop_event is not None and stop_event.is_set():
+                break
             key = keys()
             now = time.time()
             smtc_started = time.monotonic()
@@ -297,7 +321,7 @@ def _follow(
                     continue
                 prep = None
                 alignment, offset, frozen, radio = _apply_prepared(
-                    mpv, prepared, radio, position
+                    mpv, prepared, radio, position, stop_event=stop_event
                 )
             if key == "r":
                 if alignment is not None:
@@ -444,6 +468,7 @@ def _start_track(
     pick: int | None = None,
     url: str | None = None,
     announce: bool = True,
+    stop_event: threading.Event | None = None,
 ) -> tuple[Alignment | None, float, RadioRecording | None, bool]:
     """Play the track the player is on now; return its alignment, radio, and freeze flag.
 
@@ -453,6 +478,8 @@ def _start_track(
     is frozen and the follow loop keeps running: the session survives a broken
     download and picks up the next track normally.
     """
+    if stop_event is not None and stop_event.is_set():
+        return None, 0.0, None, True
     track_id = make_track_id(state.artist, state.title)
     if not state.artist.strip() and not state.title.strip():
         print("[play] the player reports no track metadata; waiting for it to update")
@@ -470,7 +497,9 @@ def _start_track(
                 print(f"[play] could not fetch the video ({exc}); continuing without a video")
                 _freeze_video(mpv)
                 return None, 0.0, None, True
-            _swap_video(mpv, video_file)
+            if stop_event is not None and stop_event.is_set():
+                return alignment, offset_s, None, True
+            _swap_video(mpv, video_file, stop_event=stop_event)
             return alignment, offset_s, None, False
 
     if announce:
@@ -515,8 +544,10 @@ def _start_track(
         print(f"[play] could not fetch the video ({exc}); no video for this track")
         _freeze_video(mpv)
         return None, 0.0, radio, True
+    if stop_event is not None and stop_event.is_set():
+        return None, 0.0, radio, True
     seek_to = position + max(0.0, time.time() - wall) if state.playing else position
-    _swap_video(mpv, video_file, seek_to=seek_to)
+    _swap_video(mpv, video_file, seek_to=seek_to, stop_event=stop_event)
     return None, 0.0, radio, False
 
 
@@ -620,6 +651,7 @@ def _apply_prepared(
     prepared: PreparedTrack,
     radio: RadioRecording | None,
     position: float,
+    stop_event: threading.Event | None = None,
 ) -> tuple[Alignment | None, float, bool, RadioRecording | None]:
     """Swap in a prepared video on the loop thread; keep a recording that can fit."""
     if prepared.video_file is None:
@@ -637,8 +669,9 @@ def _apply_prepared(
     seek_to = position
     if prepared.alignment is not None:
         seek_to = target_video_s(prepared.alignment, position, prepared.offset_s)
+    stop_kwargs = {} if stop_event is None else {"stop_event": stop_event}
     try:
-        _swap_video(mpv, prepared.video_file, seek_to=seek_to)
+        _swap_video(mpv, prepared.video_file, seek_to=seek_to, **stop_kwargs)
     except Exception as exc:  # noqa: BLE001 - a bad load must not end the session
         print(f"[play] could not show the new video ({exc}); continuing without a video")
         if radio is not None:
@@ -663,19 +696,25 @@ def _apply_prepared(
 
 
 def _swap_video(
-    mpv: MpvController, video_file: Path, *, seek_to: float | None = None
+    mpv: MpvController,
+    video_file: Path,
+    *,
+    seek_to: float | None = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     started = time.monotonic()
     fullscreen: bool | None = None
     with contextlib.suppress(Exception):
         fullscreen = mpv.fullscreen
     mpv.load(str(video_file))
-    loaded = _wait_media_loaded(mpv, video_file)
+    loaded = _wait_media_loaded(mpv, video_file, stop_event=stop_event)
     if fullscreen is not None:
         with contextlib.suppress(Exception):
             if mpv.fullscreen != fullscreen:
                 mpv.set_fullscreen(fullscreen)
     if not loaded:
+        if stop_event is not None and stop_event.is_set():
+            return
         raise MpvError("mpv did not load the new video in time")
     mpv.set_rate(1.0)
     if seek_to is not None:
@@ -701,10 +740,15 @@ def _apply(mpv: MpvController, action, last_rate: float) -> float:
 
 
 def _wait_media_loaded(
-    mpv: MpvController, video_file: Path, timeout_s: float = MPV_START_TIMEOUT_S
+    mpv: MpvController,
+    video_file: Path,
+    timeout_s: float = MPV_START_TIMEOUT_S,
+    stop_event: threading.Event | None = None,
 ) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            return False
         try:
             if mpv.path.endswith(video_file.name) and mpv.duration is not None:
                 return True
