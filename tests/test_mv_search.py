@@ -55,6 +55,23 @@ def test_rank_prefers_official_mv_over_variants():
     assert ranked[0].video_id == "mv"
 
 
+def test_rank_prefers_non_variant_mv_over_closer_remix_mv():
+    candidates = [
+        Candidate("official", "TAEYEON To. X MV", 200.0, "SMTOWN"),
+        Candidate("remix", "TAEYEON To. X IMLAY Remix MV", 171.0, "SMTOWN"),
+    ]
+    ranked = rank_candidates(candidates, 170.4, "TAEYEON", "To. X")
+    assert ranked[0].video_id == "official"
+
+
+def test_content_priority_classifies_variants_before_generic_mv():
+    from mvsync.mv_search import _content_priority
+
+    official = Candidate("official", "TAEYEON To. X MV", 200.0, "SMTOWN")
+    remix = Candidate("remix", "TAEYEON To. X IMLAY Remix MV", 171.0, "SMTOWN")
+    assert _content_priority(official, "TAEYEON") > _content_priority(remix, "TAEYEON")
+
+
 def test_rank_prefers_official_mv_over_fansub_upload():
     candidates = [
         Candidate(
@@ -229,6 +246,35 @@ def test_rank_prefers_track_artist_remake_mv_over_original_artist_mv():
     ]
     ranked = rank_candidates(candidates, 219.0, "TAEYEON", "Bansanka")
     assert ranked[0].video_id == "VVO05mYGFY8"
+
+
+def test_rank_prefers_exact_short_title_over_longer_title_containing_it():
+    candidates = [
+        Candidate("wrong", "TAEYEON I Got Love MV", 220.0, "SMTOWN"),
+        Candidate("right", "TAEYEON 태연 'I (feat. Verbal Jint)' MV", 180.0, "SMTOWN"),
+    ]
+    ranked = rank_candidates(candidates, 200.0, "TAEYEON", "I")
+    assert ranked[0].video_id == "right"
+
+
+def test_rank_matches_short_korean_title_with_unquoted_artist_prefix():
+    candidates = [
+        Candidate("wrong", "TAEYEON I Got Love MV", 220.0, "SMTOWN"),
+        Candidate("right", "태연 사계 MV", 218.0, "SMTOWN"),
+    ]
+    ranked = rank_candidates(candidates, 218.0, "TAEYEON", "사계")
+    assert ranked[0].video_id == "right"
+
+
+def test_score_penalizes_plural_lyrics_upload():
+    from mvsync.mv_search import _score
+
+    clean = Candidate("clean", "TAEYEON To. X", 170.4, "SMTOWN")
+    lyrics = Candidate("lyrics", "TAEYEON To. X (Lyrics)", 170.4, "SMTOWN")
+    assert (
+        _score(clean, 170.4, "TAEYEON", "To. X")
+        == _score(lyrics, 170.4, "TAEYEON", "To. X") + 2.0
+    )
 
 
 def test_score_title_bonus_needs_whole_words():

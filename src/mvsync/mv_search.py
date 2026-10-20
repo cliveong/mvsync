@@ -37,6 +37,7 @@ ARTIST_TITLE_BONUS = 3.0
 ARTIST_CHANNEL_BONUS = 2.0
 BAD_KEYWORDS = (
     "lyric",
+    "lyrics",
     "audio",
     "live",
     "remix",
@@ -60,6 +61,38 @@ BAD_KEYWORDS = (
     "romanized",
     "hangul",
 )
+VARIANT_KEYWORDS = (
+    "remix",
+    "cover",
+    "instrumental",
+    "live",
+    "lyric",
+    "lyrics",
+    "reaction",
+    "dance practice",
+    "performance",
+    "sped up",
+    "slowed",
+)
+TITLE_DECORATIONS = (
+    *MV_KEYWORDS,
+    "official",
+    "audio",
+    "lyric",
+    "lyrics",
+    "live",
+    "remix",
+    "cover",
+    "instrumental",
+    "performance",
+    "sped up",
+    "slowed",
+)
+_FEATURED_RE = re.compile(
+    r"[\(\[\{][^\)\]\}]*\b(?:feat|ft|featuring)\b[^\)\]\}]*[\)\]\}]",
+    re.IGNORECASE,
+)
+_SEGMENT_SPLIT_RE = re.compile(r"""[()\[\]{}"'“”‘’|/『』「」]|\s+[–—:-]\s+""")
 
 
 @dataclass(frozen=True)
@@ -135,17 +168,69 @@ def _has_word(text: str, word: str) -> bool:
     return re.search(rf"\b{re.escape(word)}\b", text) is not None
 
 
-def _tokens(text: str) -> set[str]:
-    return set(re.findall(r"\w+", text.lower()))
-
-
 def _normalized(text: str) -> str:
     return " ".join(re.findall(r"\w+", text.lower()))
 
 
-def _title_matches(candidate: Candidate, title: str) -> bool:
-    title_tokens = _tokens(title)
-    return bool(title_tokens) and title_tokens <= _tokens(candidate.title)
+def _token_list(text: str) -> list[str]:
+    return re.findall(r"\w+", text.lower())
+
+
+def _without_artist(tokens: list[str], artist: str) -> list[str]:
+    artist_tokens = _token_list(artist)
+    if not artist_tokens:
+        return tokens
+    result: list[str] = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index:index + len(artist_tokens)] == artist_tokens:
+            index += len(artist_tokens)
+        else:
+            result.append(tokens[index])
+            index += 1
+    return result
+
+
+def _title_tokens(text: str, artist: str, *, strip_decorations: bool = True) -> list[str]:
+    cleaned = _FEATURED_RE.sub(" ", text)
+    if strip_decorations:
+        for keyword in TITLE_DECORATIONS:
+            cleaned = re.sub(rf"\b{re.escape(keyword)}\b", " ", cleaned, flags=re.IGNORECASE)
+    return _without_artist(_token_list(cleaned), artist)
+
+
+def _title_views(title: str, artist: str) -> list[list[str]]:
+    base = _FEATURED_RE.sub(" ", title)
+    views = [
+        _title_tokens(title, artist),
+        _title_tokens(title, artist, strip_decorations=False),
+    ]
+    for segment in _SEGMENT_SPLIT_RE.split(base):
+        views.append(_title_tokens(segment, artist))
+        views.append(_title_tokens(segment, artist, strip_decorations=False))
+    return [view for view in views if view]
+
+
+def _title_matches(candidate: Candidate, artist: str, title: str) -> bool:
+    query = _title_tokens(title, "", strip_decorations=False)
+    if not query:
+        return False
+    views = _title_views(candidate.title, artist)
+    if len(query) == 1:
+        for view in views:
+            if view == query:
+                return True
+            if len(view) == 2 and query[0] in view:
+                other = view[0] if view[1] == query[0] else view[1]
+                if not other.isascii():
+                    return True
+        return False
+    size = len(query)
+    return any(
+        view[index:index + size] == query
+        for view in views
+        for index in range(len(view) - size + 1)
+    )
 
 
 def _artist_matches(candidate: Candidate, artist: str) -> bool:
@@ -173,25 +258,25 @@ def _is_official_channel(candidate: Candidate, artist: str) -> bool:
 def _content_priority(candidate: Candidate, artist: str) -> int:
     """MV first, then official audio, then official live, then everything else."""
     text = candidate.title.lower()
+    label_upload = _is_label_upload(candidate)
+    official = _is_official_channel(candidate, artist) or label_upload
+    if any(_has_word(text, keyword) for keyword in VARIANT_KEYWORDS):
+        return 1 if official and _has_word(text, "live") else 0
     if any(_has_word(text, keyword) for keyword in MV_KEYWORDS):
         return 3
-    label_upload = _is_label_upload(candidate)
-    if _is_official_channel(candidate, artist) or label_upload:
-        if _has_word(text, "live"):
-            return 1
-        if (
-            label_upload
-            or _has_word(text, "audio")
-            or _has_word(candidate.channel.lower(), "topic")
-        ):
-            return 2
+    if official and (
+        label_upload
+        or _has_word(text, "audio")
+        or _has_word(candidate.channel.lower(), "topic")
+    ):
+        return 2
     return 0
 
 
 def _score(candidate: Candidate, track_duration_s: float, artist: str, title: str) -> float:
     text = candidate.title.lower()
     score = 0.0
-    if _title_matches(candidate, title):
+    if _title_matches(candidate, artist, title):
         score += 2.0
     if artist.strip() and artist.lower() in text:
         score += ARTIST_TITLE_BONUS
@@ -220,7 +305,7 @@ def rank_candidates(
     return sorted(
         candidates,
         key=lambda candidate: (
-            _title_matches(candidate, title),
+            _title_matches(candidate, artist, title),
             _artist_matches(candidate, artist),
             _content_priority(candidate, artist),
             _score(candidate, track_duration_s, artist, title),
