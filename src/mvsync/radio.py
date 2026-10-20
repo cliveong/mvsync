@@ -287,6 +287,8 @@ def _fit_in_background(
             track_id=track_id,
             track_duration_s=track_duration_s,
             spotify_offset_s=0.0,
+            full_scan=False,
+            coverage_span_s=wav_duration_s(rec_path),
             root=root,
         )
         if result is None:

@@ -29,6 +29,8 @@ def align_against_candidates(
     track_id: str,
     track_duration_s: float,
     spotify_offset_s: float,
+    full_scan: bool = True,
+    coverage_span_s: float | None = None,
     root: Path | None = None,
     fetch_wav: Callable[[str], Path] | None = None,
     compute: Callable[..., Alignment] | None = None,
@@ -47,7 +49,12 @@ def align_against_candidates(
             track_duration_s=track_duration_s,
             spotify_offset_s=spotify_offset_s,
         )
-        if looks_sane(alignment, track_duration_s):
+        if looks_sane(
+            alignment,
+            track_duration_s,
+            coverage_span_s=coverage_span_s,
+            full_scan=full_scan,
+        ):
             print(f"[fit] candidate {candidate.video_id} matches the recording")
             return alignment, candidate.video_id
         print(f"[fit] candidate {candidate.video_id} does not match the recording")

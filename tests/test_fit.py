@@ -10,7 +10,7 @@ from mvsync.mv_search import Candidate
 from mvsync.player_smtc import PlayerState
 from mvsync.radio import RadioWatch, _capture_lost_audio
 from mvsync.sync_runtime import _rough_jump_delta
-from mvsync.timeline import Alignment, Anchor, SkipSpan
+from mvsync.timeline import Alignment, Anchor, HoldSpan, SkipSpan
 
 
 def make_alignment(
@@ -44,6 +44,89 @@ def test_looks_sane_rejects_low_coverage():
 
 def test_looks_sane_rejects_wild_rates():
     assert not looks_sane(make_alignment(10, rate=1.5), 200.0)
+
+
+def test_looks_sane_accepts_rate_at_the_float_edge():
+    assert looks_sane(make_alignment(10, rate=0.9 - 1e-12), 200.0)
+
+
+def test_looks_sane_uses_coverage_basis_for_partial_map():
+    alignment = make_alignment(6, span_s=60.0, track_duration_s=240.0)
+    assert looks_sane(alignment, 240.0, coverage_span_s=60.0, full_scan=False)
+    assert not looks_sane(alignment, 240.0, coverage_span_s=240.0, full_scan=True)
+
+
+def test_looks_sane_rejects_short_full_recording_with_unsupported_tail():
+    alignment = Alignment(
+        video_id="video",
+        track_id="track",
+        video_duration_s=100.0,
+        track_duration_s=240.0,
+        anchors=[
+            Anchor(0.0, 0.0),
+            Anchor(20.0, 20.0),
+            Anchor(40.0, 40.0),
+            Anchor(60.0, 60.0),
+            Anchor(80.0, 64.0),
+        ],
+        skips=[SkipSpan(60.0, 80.0, reason="internal")],
+    )
+    assert not looks_sane(alignment, 240.0, coverage_span_s=240.0, full_scan=True)
+
+
+def test_looks_sane_clamps_sane_span_to_the_covered_range():
+    alignment = Alignment(
+        video_id="video",
+        track_id="track",
+        video_duration_s=200.0,
+        track_duration_s=240.0,
+        anchors=[
+            Anchor(0.0, 0.0),
+            Anchor(30.0, 26.0),
+            Anchor(57.5, 50.0),
+            Anchor(100.0, 60.0),
+            Anchor(120.0, 80.0),
+            Anchor(140.0, 100.0),
+        ],
+        skips=[SkipSpan(57.5, 100.0, reason="internal")],
+    )
+    assert not looks_sane(alignment, 240.0, coverage_span_s=100.0, full_scan=False)
+
+
+def test_looks_sane_rejects_a_hold_that_covers_most_of_the_track():
+    alignment = Alignment(
+        video_id="video",
+        track_id="track",
+        video_duration_s=10.0,
+        track_duration_s=20.0,
+        anchors=[
+            Anchor(0.0, 0.0),
+            Anchor(2.0, 2.0),
+            Anchor(4.0, 4.0),
+            Anchor(10.0, 20.0),
+        ],
+        holds=[HoldSpan(4.0, 20.0, 4.0, reason="track-cut")],
+    )
+    assert not looks_sane(alignment, 20.0)
+
+
+def test_looks_sane_rejects_long_unplayable_segment():
+    alignment = Alignment(
+        video_id="video",
+        track_id="track",
+        video_duration_s=100.0,
+        track_duration_s=100.0,
+        anchors=[
+            Anchor(0.0, 0.0),
+            Anchor(10.0, 10.0),
+            Anchor(20.0, 20.0),
+            Anchor(30.0, 30.0),
+            Anchor(50.0, 60.0),
+            Anchor(70.0, 70.0),
+        ],
+        skips=[SkipSpan(30.0, 40.0, reason="internal")],
+    )
+    assert not looks_sane(alignment, 100.0, coverage_span_s=100.0, full_scan=True)
 
 
 def test_looks_sane_accepts_an_edited_mv_with_a_sane_majority():
@@ -693,6 +776,32 @@ def test_fit_in_background_deletes_recording_on_success(tmp_path, monkeypatch):
     assert not recording.exists()
     store = paths.ensure_dir(paths.alignments_dir(tmp_path))
     assert alignment_path(store, "video", "track").is_file()
+
+
+def test_fit_in_background_marks_first_listen_as_partial(tmp_path, monkeypatch):
+    from mvsync import radio
+
+    recording = _write_silent_wav(tmp_path / "rec.wav", seconds=60.0)
+    captured: dict[str, object] = {}
+
+    def fake_fit(*args, **kwargs):
+        captured.update(kwargs)
+        return make_alignment(20), "video"
+
+    monkeypatch.setattr(radio, "align_against_candidates", fake_fit)
+
+    radio._fit_in_background(
+        recording,
+        [Candidate("video", "", None, "")],
+        "track",
+        "artist - title",
+        200.0,
+        0.0,
+        tmp_path,
+    )
+
+    assert captured["full_scan"] is False
+    assert captured["coverage_span_s"] == pytest.approx(60.0)
 
 
 def test_fit_in_background_keeps_recording_when_nothing_matches(tmp_path, monkeypatch):

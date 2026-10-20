@@ -16,7 +16,7 @@ from mvsync.align_store import make_track_id
 from mvsync.mv_search import Candidate
 from mvsync.player_smtc import PlayerState
 from mvsync.scan_runtime import ScanAborted, _apply_prompt_answer, _record_until_end
-from mvsync.timeline import Alignment, Anchor
+from mvsync.timeline import Alignment, Anchor, HoldSpan
 
 PLAY_PRESS = 1000.0
 DURATION = 20.0
@@ -411,6 +411,36 @@ def test_scan_deletes_recording_after_saving_its_map(tmp_path, monkeypatch):
     assert alignment_path(store, VIDEO_ID, TRACK_ID).is_file()
 
 
+def test_scan_keeps_the_map_when_the_video_download_fails(tmp_path, monkeypatch, capsys):
+    from mvsync import paths
+    from mvsync.align_store import alignment_path
+
+    alignment = Alignment(
+        video_id=VIDEO_ID,
+        track_id=TRACK_ID,
+        video_duration_s=40.0,
+        track_duration_s=DURATION,
+        anchors=[Anchor(video_s=0.0, spotify_s=0.0), Anchor(video_s=20.0, spotify_s=20.0)],
+    )
+
+    def fail_fetch(url, root=None):
+        raise RuntimeError("download failed")
+
+    rc = run_scan(
+        monkeypatch,
+        tmp_path,
+        align=lambda *args, **kwargs: (alignment, VIDEO_ID),
+        fetch=fail_fetch,
+    )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "could not fetch the MV video" in out
+    assert not recording_path(tmp_path).exists()
+    store = paths.ensure_dir(paths.alignments_dir(tmp_path))
+    assert alignment_path(store, VIDEO_ID, TRACK_ID).is_file()
+
+
 def run_scan_with_candidates(monkeypatch, tmp_path, *, align, fetch=None, candidates=None):
     from mvsync import scan_runtime, session
 
@@ -454,6 +484,35 @@ def test_scan_with_candidates_records_and_saves(tmp_path, monkeypatch):
     assert result.video_id == VIDEO_ID
     assert result.path.is_file()
     assert not recording_path(tmp_path).exists()
+
+
+def test_scan_reports_and_saves_holds(tmp_path, monkeypatch, capsys):
+    from mvsync import paths
+    from mvsync.align_store import load_alignment
+
+    alignment = Alignment(
+        video_id=VIDEO_ID,
+        track_id=TRACK_ID,
+        video_duration_s=12.0,
+        track_duration_s=DURATION,
+        anchors=[
+            Anchor(video_s=0.0, spotify_s=0.0),
+            Anchor(video_s=4.0, spotify_s=4.0),
+            Anchor(video_s=6.0, spotify_s=12.0),
+            Anchor(video_s=12.0, spotify_s=20.0),
+        ],
+        holds=[HoldSpan(4.0, 10.0, 4.0, reason="track-cut")],
+    )
+    run_scan_with_candidates(
+        monkeypatch, tmp_path, align=lambda *args, **kwargs: (alignment, VIDEO_ID)
+    )
+
+    out = capsys.readouterr().out
+    assert "[scan] hold track 4.0s - 10.0s at video 4.0s" in out
+    store = paths.alignments_dir(tmp_path)
+    loaded = load_alignment(store, VIDEO_ID, TRACK_ID)
+    assert loaded is not None
+    assert loaded[0].holds == alignment.holds
 
 
 def test_scan_with_candidates_prunes_superseded_map(tmp_path, monkeypatch):

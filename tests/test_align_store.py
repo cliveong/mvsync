@@ -15,7 +15,7 @@ from mvsync.align_store import (
     save_alignment,
     video_id_from_alignment_path,
 )
-from mvsync.timeline import Alignment, Anchor, SkipSpan
+from mvsync.timeline import Alignment, Anchor, HoldSpan, SkipSpan
 
 TRACK_ID = make_track_id("Artist", "Title")
 
@@ -28,6 +28,22 @@ def sample_alignment() -> Alignment:
         track_duration_s=200.0,
         anchors=[Anchor(13.0, 0.0), Anchor(100.0, 87.0), Anchor(213.0, 200.0)],
         skips=[SkipSpan(100.0, 113.0, reason="internal", confidence=0.9)],
+    )
+
+
+def hold_alignment() -> Alignment:
+    return Alignment(
+        video_id="vid",
+        track_id="trk",
+        video_duration_s=12.0,
+        track_duration_s=18.0,
+        anchors=[
+            Anchor(0.0, 0.0),
+            Anchor(4.0, 4.0),
+            Anchor(6.0, 12.0),
+            Anchor(12.0, 18.0),
+        ],
+        holds=[HoldSpan(4.0, 10.0, 4.0, reason="track-cut", confidence=0.9)],
     )
 
 
@@ -72,7 +88,30 @@ def test_load_missing_returns_none(tmp_path):
     assert load_alignment(tmp_path, "nope", "nope") is None
 
 
-def test_unsupported_version_rejected():
+def test_dict_roundtrip_preserves_holds():
+    alignment = hold_alignment()
+    data = alignment_to_dict(alignment)
+    assert data["version"] == 2
+    assert data["holds"] == [[4.0, 10.0, 4.0, "track-cut", 0.9]]
+    restored, _ = alignment_from_dict(data)
+    assert restored.holds == alignment.holds
+
+
+def test_version_1_payload_loads_without_holds():
+    alignment = sample_alignment()
+    data = alignment_to_dict(alignment)
+    data["version"] = 1
+    data.pop("holds", None)
+    restored, offset = alignment_from_dict(data)
+    assert offset == pytest.approx(0.0)
+    assert restored.holds == ()
+
+
+def test_versions_1_and_2_are_accepted_but_999_is_not():
+    alignment = sample_alignment()
+    data = alignment_to_dict(alignment)
+    alignment_from_dict({**data, "version": 1})
+    alignment_from_dict({**data, "version": 2})
     with pytest.raises(ValueError):
         alignment_from_dict({"version": 999})
 

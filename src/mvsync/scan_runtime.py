@@ -208,21 +208,25 @@ def _record_and_fit(
                 os.replace(rec_path, renamed)
                 rec_path = renamed
 
-        print("[scan] fetching the MV video (cached after the first run)")
-        video_file = fetch_video_mp4(video_url(video_id), root=root)
-        print(f"[scan] MV video: {video_file.name} ({video_file.stat().st_size / 1e6:.0f} MB)")
-
         for span in alignment.skips:
             print(
                 f"[scan] skip {span.reason}: video "
                 f"{span.video_start_s:.1f}s - {span.video_end_s:.1f}s"
+            )
+        for hold in alignment.holds:
+            print(
+                f"[scan] hold track {hold.spotify_start_s:.1f}s - "
+                f"{hold.spotify_end_s:.1f}s at video {hold.video_s:.1f}s"
             )
         for segment in alignment.segments:
             print(
                 f"[scan] segment video {segment.video_start_s:.1f}s - "
                 f"{segment.video_end_s:.1f}s, rate {segment.rate:.3f}"
             )
-        if any(abs(segment.rate - 1.0) > 0.05 for segment in alignment.segments):
+        if any(
+            segment.rate != 0.0 and abs(segment.rate - 1.0) > 0.05
+            for segment in alignment.segments
+        ):
             print("[scan] warning: a segment rate deviates from 1.0; listen for drift")
 
         store = paths.ensure_dir(paths.alignments_dir(root))
@@ -234,6 +238,20 @@ def _record_and_fit(
         if removed:
             print(f"[scan] removed {len(removed)} superseded alignment(s)")
         on_progress("saved")
+
+        print("[scan] fetching the MV video (cached after the first run)")
+        try:
+            video_file = fetch_video_mp4(video_url(video_id), root=root)
+        except RuntimeError as exc:
+            print(
+                f"[scan] warning: could not fetch the MV video ({exc}); "
+                "the map is saved and play will retry"
+            )
+        else:
+            print(
+                f"[scan] MV video: {video_file.name} "
+                f"({video_file.stat().st_size / 1e6:.0f} MB)"
+            )
         return ScanResult(video_id=video_id, path=saved)
     finally:
         _discard(rec_path)

@@ -13,9 +13,10 @@ import re
 import tempfile
 from pathlib import Path
 
-from mvsync.timeline import Alignment, Anchor, SkipSpan
+from mvsync.timeline import Alignment, Anchor, HoldSpan, SkipSpan
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SUPPORTED_VERSIONS = (1, 2)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -44,12 +45,22 @@ def alignment_to_dict(alignment: Alignment, offset_s: float = 0.0) -> dict:
             [span.video_start_s, span.video_end_s, span.reason, span.confidence]
             for span in alignment.skips
         ],
+        "holds": [
+            [
+                span.spotify_start_s,
+                span.spotify_end_s,
+                span.video_s,
+                span.reason,
+                span.confidence,
+            ]
+            for span in alignment.holds
+        ],
     }
 
 
 def alignment_from_dict(data: dict) -> tuple[Alignment, float]:
     version = data.get("version")
-    if version != SCHEMA_VERSION:
+    if version not in SUPPORTED_VERSIONS:
         raise ValueError(f"unsupported alignment schema version: {version!r}")
     anchors = [Anchor(video_s=float(v), spotify_s=float(s)) for v, s in data["anchors"]]
     skips = [
@@ -61,6 +72,16 @@ def alignment_from_dict(data: dict) -> tuple[Alignment, float]:
         )
         for v0, v1, reason, conf in data.get("skips", [])
     ]
+    holds = [
+        HoldSpan(
+            spotify_start_s=float(s0),
+            spotify_end_s=float(s1),
+            video_s=float(video),
+            reason=reason,
+            confidence=float(conf),
+        )
+        for s0, s1, video, reason, conf in data.get("holds", [])
+    ]
     alignment = Alignment(
         video_id=data["video_id"],
         track_id=data["track_id"],
@@ -68,6 +89,7 @@ def alignment_from_dict(data: dict) -> tuple[Alignment, float]:
         track_duration_s=float(data["track_duration_s"]),
         anchors=anchors,
         skips=skips,
+        holds=holds,
     )
     return alignment, float(data.get("offset_s", 0.0))
 

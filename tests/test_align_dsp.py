@@ -9,7 +9,7 @@ they carry the ``dsp`` marker.
 import numpy as np
 import pytest
 
-from mvsync.align import compute_alignment_from_audio
+from mvsync.align import compute_alignment_from_audio, looks_sane
 
 SR = 22050
 
@@ -95,4 +95,93 @@ def test_internal_gap_becomes_skip_span():
     assert span.video_end_s == pytest.approx(10.5, abs=1.2)
 
     assert alignment.spotify_to_video(4.0) == pytest.approx(4.0, abs=0.4)
-    assert alignment.spotify_to_video(6.0) == pytest.approx(10.5, abs=0.9)
+    assert alignment.spotify_to_video(6.1) == pytest.approx(10.5, abs=0.9)
+
+
+def test_track_cut_becomes_a_hold():
+    roots = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25, 261.63]
+    music = _progression(roots)  # 18 s
+    video = np.concatenate([music[: int(6 * SR)], music[int(12 * SR) :]])  # 6..12 removed
+
+    alignment = _align(music, video)
+
+    assert len(alignment.holds) == 1
+    hold = alignment.holds[0]
+    assert hold.spotify_start_s == pytest.approx(4.0, abs=0.8)
+    assert hold.spotify_end_s == pytest.approx(10.2, abs=0.8)
+    assert hold.video_s == pytest.approx(4.1, abs=0.8)
+    assert not [span for span in alignment.skips if span.reason == "internal"]
+    assert alignment.spotify_to_video(8.0) == pytest.approx(4.1, abs=0.8)
+    assert alignment.spotify_to_video(12.0) == pytest.approx(5.9, abs=0.8)
+    assert alignment.spotify_to_video(14.0) == pytest.approx(8.0, abs=0.8)
+    assert looks_sane(alignment, len(music) / SR)
+
+
+def test_repeated_video_tail_is_repaired():
+    roots = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25, 261.63]
+    music = _progression(roots)  # 18 s
+    video = np.concatenate([music, music[int(6 * SR) :]])  # 30 s, B+C repeated
+
+    alignment = _align(music, video)
+
+    trailing = [span for span in alignment.skips if span.reason == "trailing"]
+    assert trailing
+    assert trailing[0].video_start_s == pytest.approx(18.0, abs=0.4)
+    assert alignment.anchors[-1].video_s == pytest.approx(18.0, abs=0.4)
+    assert alignment.anchors[-1].spotify_s == pytest.approx(18.0, abs=0.4)
+    assert alignment.segments[0].rate == pytest.approx(1.0, abs=0.03)
+    assert alignment.spotify_to_video(17.5) == pytest.approx(17.5, abs=0.4)
+    assert looks_sane(alignment, len(music) / SR)
+
+
+def test_two_talks_keep_gap_boundaries_and_sane_rates():
+    roots = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25]
+    spotify = _progression(roots * 2)[: int(15 * SR)]
+    rng = np.random.default_rng(7)
+    first_talk = 0.3 * rng.standard_normal(int(3 * SR))
+    second_talk = 0.3 * rng.standard_normal(int(3 * SR))
+    video = np.concatenate(
+        [
+            spotify[: int(6 * SR)],
+            first_talk,
+            spotify[int(6 * SR) : int(12 * SR)],
+            second_talk,
+            spotify[int(12 * SR) :],
+        ]
+    )
+
+    alignment = _align(spotify, video)
+
+    internal = [span for span in alignment.skips if span.reason == "internal"]
+    assert len(internal) == 2
+    assert internal[0].video_start_s == pytest.approx(6.0, abs=0.4)
+    assert internal[0].video_end_s == pytest.approx(9.0, abs=0.4)
+    assert internal[1].video_start_s == pytest.approx(15.0, abs=0.4)
+    assert internal[1].video_end_s == pytest.approx(18.0, abs=0.4)
+    assert all(segment.rate == pytest.approx(1.0, abs=0.1) for segment in alignment.segments)
+    assert looks_sane(alignment, len(spotify) / SR)
+    assert alignment.spotify_to_video(6.5) == pytest.approx(9.5, abs=0.2)
+    assert alignment.spotify_to_video(12.5) == pytest.approx(18.5, abs=0.2)
+    assert alignment.video_to_spotify(9.1) == pytest.approx(6.1, abs=0.2)
+
+
+def test_two_close_talks_do_not_create_a_spurious_gap():
+    roots = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25]
+    spotify = _progression(roots * 2)[: int(14 * SR)]
+    rng = np.random.default_rng(7)
+    first_talk = 0.3 * rng.standard_normal(int(3 * SR))
+    second_talk = 0.3 * rng.standard_normal(int(3 * SR))
+    video = np.concatenate(
+        [
+            spotify[: int(6 * SR)],
+            first_talk,
+            spotify[int(6 * SR) : int(8 * SR)],
+            second_talk,
+            spotify[int(8 * SR) :],
+        ]
+    )
+
+    alignment = _align(spotify, video)
+
+    internal = [span for span in alignment.skips if span.reason == "internal"]
+    assert len(internal) == 2
