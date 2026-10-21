@@ -7,7 +7,7 @@ from functools import partial
 
 import pytest
 
-from mvsync.gui import MAIN_ACTIONS, lock_status
+from mvsync.gui import MAIN_ACTIONS
 from mvsync.gui_console import KeySource, LogSink
 
 
@@ -53,6 +53,30 @@ class FakeWidget:
     def pack_forget(self):
         self.options["packed"] = False
 
+    def focus_set(self):
+        self.options["focused"] = True
+
+
+class FakeProgress:
+    """Stand-in for ttk.Progressbar: records start, stop, and packing."""
+
+    def __init__(self):
+        self.started = 0
+        self.stopped = 0
+        self.packed = False
+
+    def start(self):
+        self.started += 1
+
+    def stop(self):
+        self.stopped += 1
+
+    def pack(self, **kwargs):
+        self.packed = True
+
+    def pack_forget(self):
+        self.packed = False
+
 
 class FakeEvent:
     """Only the two attributes MainWindow._on_key reads, so no Tk root is needed."""
@@ -82,6 +106,22 @@ class StandInWindow:
         self._closing = closing
         self._state = state
         self._pump_after = None
+        self._root_dir = None
+        self._players = []
+        self._busy = False
+        self._action = None
+        self._locked = False
+        self._lock_pid = 0
+        self._video_switches = None
+        self._picker_open = False
+        self._picker_track_id = None
+        self._picker_candidates = []
+        self._picker_current_video = None
+        self._picker_busy = False
+        self._notice = None
+        self._notice_label = None
+        self._notice_kind = None
+        self._refresh_after = None
         self.scheduled = []
         self.cancelled = []
 
@@ -93,6 +133,21 @@ class StandInWindow:
 
     def after_cancel(self, handle):
         self.cancelled.append(handle)
+
+    def _selected_index(self):
+        from mvsync.gui import MainWindow
+
+        return MainWindow._selected_index(self)
+
+    def _selected_candidate(self):
+        from mvsync.gui import MainWindow
+
+        return MainWindow._selected_candidate(self)
+
+    def _auto_refresh(self):
+        from mvsync.gui import MainWindow
+
+        return MainWindow._auto_refresh(self)
 
 
 class ThreadCheckedUrlVar:
@@ -136,14 +191,19 @@ def lock_stand_in(root):
     window._buttons = {action: FakeButton() for action in MAIN_ACTIONS}
     window._track_label = FakeWidget()
     window._status_label = FakeWidget()
+    window._status_dot = FakeWidget()
     window._hotkey_row = FakeWidget()
     window._log = partial(MainWindow._log, window)
     window._refresh_lock = partial(MainWindow._refresh_lock, window)
     window._update_buttons = partial(MainWindow._update_buttons, window)
     window._set_status = partial(MainWindow._set_status, window)
     window._update_status = partial(MainWindow._update_status, window)
+    window._show_notice = partial(MainWindow._show_notice, window)
+    window._clear_notice = partial(MainWindow._clear_notice, window)
+    window._refresh_sync_badge = partial(MainWindow._refresh_sync_badge, window)
     window._set_hotkeys_visible = partial(MainWindow._set_hotkeys_visible, window)
     window._cancel_pump = partial(MainWindow._cancel_pump, window)
+    window._set_progress = partial(MainWindow._set_progress, window)
     window._run_finished = partial(MainWindow._run_finished, window)
     window._pump = partial(MainWindow._pump, window)
     window._worker = None
@@ -179,12 +239,70 @@ def test_format_length():
     assert format_length(221.0) == "3:41"
 
 
-def test_candidate_row_values_marks_the_one_in_use():
+def test_now_playing_values_shape_the_header():
+    from mvsync.gui import now_playing_values
+    from mvsync.player_smtc import PlayerState
+
+    state = PlayerState(
+        title="Psycho",
+        artist="Red Velvet",
+        duration_s=221.0,
+        position_s=12.0,
+        updated_epoch_s=100.0,
+        playing=True,
+    )
+    assert now_playing_values(state) == ("Psycho", "Red Velvet", "3:41 · Playing")
+
+
+def test_now_playing_values_explain_an_empty_session():
+    from mvsync.gui import now_playing_values
+
+    assert now_playing_values(None) == (
+        "Nothing playing yet",
+        "Start a song in Spotify, then press Play.",
+        "No active player",
+    )
+
+
+def test_status_tone_prioritizes_busy_over_locked():
+    from mvsync.gui import status_tone
+
+    assert status_tone(busy=True, locked=True) == "busy"
+    assert status_tone(busy=False, locked=True) == "locked"
+    assert status_tone(busy=False, locked=False) == "idle"
+
+
+def test_hotkey_hint_labels_the_controls():
+    from mvsync.gui import hotkey_hint
+
+    assert hotkey_hint("q") == "Stop"
+    assert hotkey_hint("r") == "Resync"
+    assert hotkey_hint("[") == "Trim -"
+    assert hotkey_hint("]") == "Trim +"
+    assert hotkey_hint("p") == "Player"
+
+
+def test_progress_bar_runs_only_while_busy():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow()
+    window._progress = FakeProgress()
+
+    MainWindow._set_progress(window, True)
+    assert window._progress.started == 1
+    assert window._progress.packed is True
+
+    MainWindow._set_progress(window, False)
+    assert window._progress.stopped == 1
+    assert window._progress.packed is False
+
+
+def test_candidate_row_values_marks_the_current_video():
     from mvsync.gui import candidate_row_values
     from mvsync.mv_search import Candidate
 
     candidate = Candidate("v1", "Title", 200.0, "Chan")
-    assert candidate_row_values(1, candidate, "v1") == ("1", "Title", "Chan", "3:20", "in use")
+    assert candidate_row_values(1, candidate, "v1") == ("1", "Title", "Chan", "3:20", "Current")
     assert candidate_row_values(1, candidate, None) == ("1", "Title", "Chan", "3:20", "")
 
 
@@ -466,6 +584,12 @@ def test_enabled_actions_disable_everything_while_busy():
     assert enabled_actions(busy=True, locked=False) == ()
 
 
+def test_enabled_actions_require_a_track_except_for_setup():
+    from mvsync.gui import enabled_actions
+
+    assert enabled_actions(busy=False, locked=False, has_track=False) == ("doctor",)
+
+
 def test_the_buttons_go_disabled_while_another_session_holds_the_lock(tmp_path, monkeypatch):
     from mvsync import session
 
@@ -492,9 +616,11 @@ def test_the_lock_notice_is_logged_once_not_on_every_refresh(tmp_path, monkeypat
 
 def test_the_buttons_come_back_when_the_other_session_ends(tmp_path, monkeypatch):
     from mvsync import session
+    from mvsync.player_smtc import PlayerState
 
     monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
     window = lock_stand_in(tmp_path)
+    window._state = PlayerState("Artist", "Song", 180.0, 30.0, 100.0, True)
     window._refresh_lock()
 
     monkeypatch.setattr(session, "lock_holder", lambda root: 0)
@@ -513,6 +639,60 @@ def test_the_play_button_stays_enabled_as_stop_while_its_own_session_runs(tmp_pa
     window._refresh_lock()
     assert window._buttons["play"].state == "normal"
     assert window._buttons["scan"].state == "disabled"
+
+
+def test_the_play_worker_passes_the_stop_event(tmp_path, monkeypatch):
+    import queue
+
+    from mvsync import gui, sync_runtime
+
+    window = StandInWindow()
+    window._root_dir = tmp_path
+    window._play_stop = threading.Event()
+    window._video_switches = queue.Queue()
+    captured = {}
+    monkeypatch.setattr(
+        sync_runtime, "run_play", lambda *args, **kwargs: captured.update(kwargs) or 0
+    )
+
+    assert gui.MainWindow._play_worker(window) == 0
+    assert captured["stop_event"] is window._play_stop
+    assert captured["switches"] is window._video_switches
+
+
+def test_stopping_play_sets_the_stop_event_before_joining():
+    from mvsync.gui import MainWindow
+
+    observed = []
+
+    class Worker:
+        def join(self, timeout=None):
+            observed.append(window._play_stop.is_set())
+
+    window = StandInWindow()
+    window._play_stop = threading.Event()
+    window._worker = Worker()
+
+    MainWindow._stop_play(window)
+
+    assert window._play_stop.is_set()
+    assert observed == [True]
+
+
+def test_starting_play_gets_a_fresh_stop_event():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow()
+    window._action = None
+    window._play_stop = threading.Event()
+    window._play_stop.set()
+    window._play_worker = lambda: 0
+    window._reset_keys = lambda: None
+    window._run = lambda action, worker: None
+
+    MainWindow.play(window)
+
+    assert not window._play_stop.is_set()
 
 
 def test_a_locked_window_starts_no_worker_and_says_why(tmp_path, monkeypatch):
@@ -537,8 +717,8 @@ def test_a_refusal_points_at_refresh_track_as_the_way_back(tmp_path, monkeypatch
     window = lock_stand_in(tmp_path)
 
     MainWindow._run(window, "play", lambda: 0)
-    assert "Refresh track" in window._log_text.value
-    assert window._status_label.options["text"] == lock_status(424242)
+    assert "Refresh" in window._log_text.value
+    assert window._status_label.options["text"] == "Another session is running"
     assert window._busy is False
 
 
@@ -549,10 +729,10 @@ def test_the_status_line_says_a_session_holds_the_lock(tmp_path, monkeypatch):
     window = lock_stand_in(tmp_path)
 
     window._refresh_lock()
-    assert window._status_label.options["text"] == lock_status(424242)
+    assert window._status_label.options["text"] == "Another session is running"
 
 
-def test_the_status_line_returns_to_idle_when_the_other_session_ends(tmp_path, monkeypatch):
+def test_the_status_line_returns_to_ready_when_the_other_session_ends(tmp_path, monkeypatch):
     from mvsync import session
 
     monkeypatch.setattr(session, "lock_holder", lambda root: 424242)
@@ -561,7 +741,7 @@ def test_the_status_line_returns_to_idle_when_the_other_session_ends(tmp_path, m
 
     monkeypatch.setattr(session, "lock_holder", lambda root: 0)
     window._refresh_lock()
-    assert window._status_label.options["text"] == "idle"
+    assert window._status_label.options["text"] == "Ready"
 
 
 def test_the_status_line_names_the_operation_that_is_running(tmp_path, monkeypatch):
@@ -573,7 +753,7 @@ def test_the_status_line_names_the_operation_that_is_running(tmp_path, monkeypat
     window._action = "play"
 
     window._refresh_lock()
-    assert window._status_label.options["text"] == "play running..."
+    assert window._status_label.options["text"] == "Playing"
 
 
 def test_lock_status_names_the_pid_and_the_way_out():
@@ -581,7 +761,7 @@ def test_lock_status_names_the_pid_and_the_way_out():
 
     text = lock_status(424242)
     assert "424242" in text
-    assert "Refresh track" in text
+    assert "Refresh" in text
 
 
 def test_refreshing_the_track_re_reads_the_lock(tmp_path, monkeypatch):
@@ -629,7 +809,7 @@ def test_run_starts_a_worker_and_captures_its_stdout(tmp_path, monkeypatch):
 
     MainWindow._run(window, "play", work)
     assert window._busy is True
-    assert window._status_label.options["text"] == "play running..."
+    assert window._status_label.options["text"] == "Playing"
     assert window._hotkey_row.options["packed"] is True
     assert (LOG_PUMP_MS, window._pump) in window.scheduled
 
@@ -707,9 +887,11 @@ def test_run_refuses_a_second_operation_while_one_is_already_running(tmp_path, m
 def test_run_finished_puts_the_window_back_the_way_it_was(tmp_path, monkeypatch):
     from mvsync import session
     from mvsync.gui import MainWindow
+    from mvsync.player_smtc import PlayerState
 
     monkeypatch.setattr(session, "lock_holder", lambda root: 0)
     window = run_stand_in(tmp_path)
+    window._state = PlayerState("Artist", "Song", 180.0, 30.0, 100.0, True)
     window._busy = True
     window._action = "play"
     window._pump_after = "after#1"
@@ -723,7 +905,7 @@ def test_run_finished_puts_the_window_back_the_way_it_was(tmp_path, monkeypatch)
     assert window._pump_after is None
     assert window.cancelled == ["after#1"]
     assert window._hotkey_row.options["packed"] is False
-    assert window._status_label.options["text"] == "idle"
+    assert window._status_label.options["text"] == "Ready"
     assert all(button.state == "normal" for button in window._buttons.values())
     assert "[play] last words\n" in window._log_text.value
     assert "exited with code" not in window._log_text.value
@@ -754,7 +936,9 @@ def test_run_finished_refreshes_the_track_after_a_scan(tmp_path, monkeypatch):
     assert refreshed == [True]
 
 
-def test_scan_reads_the_url_on_the_tk_thread_not_inside_the_worker(tmp_path, monkeypatch):
+def test_use_url_reads_on_the_tk_thread_and_the_worker_gets_a_string(
+    tmp_path, monkeypatch
+):
     """Tk raises RuntimeError for a StringVar touched off its own thread."""
     from pathlib import Path
 
@@ -774,13 +958,13 @@ def test_scan_reads_the_url_on_the_tk_thread_not_inside_the_worker(tmp_path, mon
     window = run_stand_in(tmp_path)
     window._url_var = ThreadCheckedUrlVar("https://youtu.be/abcdefghijk")
     window._scan_candidates = lambda url: [Candidate("abcdefghijk", "t", 180.0, "c")]
-    window.scan = partial(MainWindow.scan, window)
+    window.use_url = partial(MainWindow.use_url, window)
     window._start_scan = partial(MainWindow._start_scan, window)
     window._scan_worker = partial(MainWindow._scan_worker, window)
     started = []
     window._run = lambda action, worker: started.append((action, worker))
 
-    window.scan()
+    window.use_url()
     action, worker = started.pop()
 
     results = []
@@ -800,8 +984,6 @@ def test_the_close_prompt_only_promises_to_stop_a_running_play():
     assert "stops it" in close_question("play")
     assert "stops it" not in close_question("scan")
     assert "abandons" in close_question("scan")
-    assert "stops it" not in close_question("fix")
-    assert "picker" in close_question("fix")
     assert "stops it" not in close_question(None)
 
 
@@ -823,6 +1005,9 @@ class StandInFixer:
     def back(self):
         self.back_calls += 1
 
+    def _log(self, message):
+        pass
+
     def _on_close(self):
         self.closed = True
 
@@ -835,46 +1020,19 @@ def test_the_fix_window_back_uses_the_close_confirmation():
     assert window.closed is True
 
 
-def test_a_successful_fix_offers_to_go_back(monkeypatch):
+def test_a_successful_rebuild_closes_the_window():
     from pathlib import Path
 
     from mvsync import gui
     from mvsync.scan_runtime import ScanResult
 
     window = StandInFixer()
-    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *args, **kwargs: True)
 
     gui.FixerWindow._use_done(window, ScanResult(path=Path("m.json"), video_id="v"))
 
     assert window.busy is False
     assert window.back_calls == 1
     assert window.refreshed == 1
-
-
-def test_declining_the_way_back_keeps_the_fixer_open(monkeypatch):
-    from pathlib import Path
-
-    from mvsync import gui
-    from mvsync.scan_runtime import ScanResult
-
-    window = StandInFixer()
-    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *args, **kwargs: False)
-
-    gui.FixerWindow._use_done(window, ScanResult(path=Path("m.json"), video_id="v"))
-
-    assert window.busy is False
-    assert window.back_calls == 0
-    assert window.refreshed == 1
-
-
-def test_player_label_names_the_track_and_app():
-    from mvsync.gui import player_label
-    from mvsync.player_smtc import PlayerSession
-
-    label = player_label(PlayerSession("vlc.exe", "Song", "Artist", True))
-    assert "Song" in label and "Artist" in label and "vlc.exe" in label
 
 
 def test_player_index_prefers_the_configured_match():
@@ -931,3 +1089,336 @@ def test_selecting_a_player_saves_the_app_and_guessed_exe(monkeypatch):
     gui.MainWindow._select_player(window)
 
     assert saved == [("vlc.exe", "vlc.exe")]
+
+
+def test_choose_video_is_enabled_while_playing(tmp_path, monkeypatch):
+    from mvsync import session
+
+    monkeypatch.setattr(session, "lock_holder", lambda root: 0)
+    window = lock_stand_in(tmp_path)
+    window._busy = True
+    window._action = "play"
+
+    window._refresh_lock()
+
+    assert window._buttons["play"].state == "normal"
+    assert window._buttons["fix"].state == "normal"
+    assert window._buttons["scan"].state == "disabled"
+    assert window._buttons["doctor"].state == "disabled"
+
+
+def test_scan_uses_the_current_track_and_does_not_read_the_url():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow(state=object())
+    window._url_var = ThreadCheckedUrlVar("https://youtu.be/abcdefghijk")
+    started = []
+    window._start_scan = lambda url: started.append(url)
+
+    MainWindow.scan(window)
+
+    assert started == [""]
+    assert window._url_var.reads == []
+
+
+def test_use_url_reads_the_entry_on_the_tk_thread():
+    from mvsync.gui import MainWindow
+
+    url = "https://youtu.be/abcdefghijk"
+    window = StandInWindow()
+    window._url_var = ThreadCheckedUrlVar(url)
+    started = []
+    window._start_scan = lambda value: started.append(value)
+
+    MainWindow.use_url(window)
+
+    assert started == [url]
+    assert window._url_var.reads == [threading.current_thread()]
+
+
+def test_use_video_saves_the_choice_and_queues_a_switch(tmp_path):
+    import queue
+
+    from mvsync import gui, video_choice
+    from mvsync.align_store import make_track_id
+    from mvsync.mv_search import Candidate
+    from mvsync.player_smtc import PlayerState
+
+    state = PlayerState("Artist", "Song", 180.0, 30.0, 100.0, True)
+    track_id = make_track_id(state.artist, state.title)
+    window = StandInWindow(state=state)
+    window._root_dir = tmp_path
+    window._picker_open = True
+    window._picker_track_id = track_id
+    window._picker_candidates = [Candidate("abcdefghijk", "Title", 180.0, "Channel")]
+    window._picker_current_video = None
+    window._picker_tree = type("Tree", (), {"selection": lambda self: ("1",)})()
+    window._action = "play"
+    window._video_switches = queue.Queue()
+    closed, notices = [], []
+    window._close_picker = lambda: closed.append(True)
+    window._show_notice = lambda message, kind="danger": notices.append(message)
+
+    gui.MainWindow._use_selected(window)
+
+    assert video_choice.load_video_choice(track_id, tmp_path) == "abcdefghijk"
+    switch = window._video_switches.get_nowait()
+    assert switch.track_id == track_id
+    assert switch.video_id == "abcdefghijk"
+    assert closed == [True]
+    assert notices and "refined" in notices[0]
+
+
+def test_use_video_refuses_after_a_track_change(tmp_path):
+    import queue
+
+    from mvsync import gui, video_choice
+    from mvsync.align_store import make_track_id
+    from mvsync.mv_search import Candidate
+    from mvsync.player_smtc import PlayerState
+
+    state = PlayerState("Artist", "Other", 180.0, 30.0, 100.0, True)
+    window = StandInWindow(state=state)
+    window._root_dir = tmp_path
+    window._picker_open = True
+    window._picker_track_id = make_track_id("Artist", "Song")
+    window._picker_candidates = [Candidate("abcdefghijk", "Title", 180.0, "Channel")]
+    window._picker_current_video = None
+    window._picker_tree = type("Tree", (), {"selection": lambda self: ("1",)})()
+    window._action = "play"
+    window._video_switches = queue.Queue()
+    notices = []
+    window._close_picker = lambda: None
+    window._show_notice = lambda message, kind="danger": notices.append(message)
+
+    gui.MainWindow._use_selected(window)
+
+    assert video_choice.load_video_choice(window._picker_track_id, tmp_path) is None
+    assert window._video_switches.empty()
+    assert notices and "track changed" in notices[0]
+
+
+def test_use_video_does_not_queue_a_switch_when_stopped(tmp_path):
+    import queue
+
+    from mvsync import gui, video_choice
+    from mvsync.align_store import make_track_id
+    from mvsync.mv_search import Candidate
+    from mvsync.player_smtc import PlayerState
+
+    state = PlayerState("Artist", "Song", 180.0, 30.0, 100.0, True)
+    track_id = make_track_id(state.artist, state.title)
+    window = StandInWindow(state=state)
+    window._root_dir = tmp_path
+    window._picker_open = True
+    window._picker_track_id = track_id
+    window._picker_candidates = [Candidate("abcdefghijk", "Title", 180.0, "Channel")]
+    window._picker_current_video = None
+    window._picker_tree = type("Tree", (), {"selection": lambda self: ("1",)})()
+    window._action = None
+    window._video_switches = queue.Queue()
+    window._close_picker = lambda: None
+    window._show_notice = lambda message, kind="danger": None
+
+    gui.MainWindow._use_selected(window)
+
+    assert video_choice.load_video_choice(track_id, tmp_path) == "abcdefghijk"
+    assert window._video_switches.empty()
+
+
+def test_sync_badge_describes_rough_and_ready(tmp_path):
+    from mvsync import paths, video_choice
+    from mvsync.align_store import make_track_id, save_alignment
+    from mvsync.gui import sync_badge_text
+    from mvsync.timeline import Alignment, Anchor
+
+    track_id = make_track_id("Artist", "Song")
+    assert sync_badge_text(track_id, tmp_path) == ("First listen, refining", "rough")
+
+    video_choice.save_video_choice(track_id, "video", tmp_path)
+    assert sync_badge_text(track_id, tmp_path) == ("Rough, refining", "rough")
+
+    alignment = Alignment(
+        video_id="video",
+        track_id=track_id,
+        video_duration_s=200.0,
+        track_duration_s=180.0,
+        anchors=[Anchor(0.0, 0.0), Anchor(180.0, 180.0)],
+    )
+    save_alignment(paths.ensure_dir(paths.alignments_dir(tmp_path)), alignment)
+    assert sync_badge_text(track_id, tmp_path) == ("Synced", "synced")
+
+    video_choice.save_video_choice(track_id, "other", tmp_path)
+    assert sync_badge_text(track_id, tmp_path) == ("Rough, refining", "rough")
+
+
+def test_auto_refresh_reschedules_itself():
+    from mvsync.gui import TRACK_REFRESH_MS, MainWindow
+
+    window = StandInWindow()
+    window._busy = False
+    calls = []
+    window.refresh_track = lambda quiet=False: calls.append(quiet)
+
+    MainWindow._auto_refresh(window)
+
+    assert calls == [True]
+    assert window._refresh_after == "after#1"
+    assert window.scheduled == [(TRACK_REFRESH_MS, window._auto_refresh)]
+
+
+def test_show_notice_sets_an_inline_message():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow()
+    window._notice = FakeWidget()
+    window._notice_label = FakeWidget()
+    window._notice_kind = None
+
+    MainWindow._show_notice(window, "No player found", kind="danger")
+    assert window._notice_label.options["text"] == "No player found"
+    assert window._notice.options["packed"] is True
+    assert window._notice_kind == "danger"
+
+    MainWindow._clear_notice(window, kind="lock")
+    assert window._notice.options["packed"] is True
+
+    MainWindow._clear_notice(window, kind="danger")
+    assert window._notice.options["packed"] is False
+
+
+def test_toggle_url_reveals_the_entry_and_returns_it():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow()
+    window._url_panel = FakeWidget()
+    window._url_toggle = FakeWidget()
+    window._url_entry = FakeWidget()
+    window._url_revealed = False
+
+    MainWindow._toggle_url(window)
+    assert window._url_revealed is True
+    assert window._url_panel.options["packed"] is True
+    assert window._url_entry.options["focused"] is True
+    assert window._url_toggle.options["text"] == "Hide video link"
+
+    MainWindow._toggle_url(window)
+    assert window._url_revealed is False
+    assert window._url_panel.options["packed"] is False
+
+
+def test_closing_the_picker_clears_a_pending_search():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow()
+    window._picker_open = True
+    window._picker_busy = True
+    window._show_now_view = lambda: None
+    window._update_buttons = lambda: None
+    window._update_status = lambda: None
+
+    MainWindow._close_picker(window)
+
+    assert window._picker_open is False
+    assert window._picker_busy is False
+
+
+def test_a_finished_search_releases_the_picker_even_after_it_closed():
+    from mvsync.gui import MainWindow
+
+    window = StandInWindow()
+    window._picker_open = False
+    window._picker_track_id = "track"
+    window._picker_busy = True
+    window._picker_search_button = FakeWidget()
+
+    MainWindow._picker_search_done(window, "track", [])
+
+    assert window._picker_busy is False
+    assert window._picker_search_button.options["state"] == "normal"
+
+
+def test_sync_badge_uses_the_choice_map_over_a_newer_other_map(tmp_path):
+    import time
+
+    from mvsync import paths, video_choice
+    from mvsync.align_store import make_track_id, save_alignment
+    from mvsync.gui import sync_badge_text
+    from mvsync.timeline import Alignment, Anchor
+
+    track_id = make_track_id("Artist", "Song")
+    store = paths.ensure_dir(paths.alignments_dir(tmp_path))
+    chosen = Alignment(
+        video_id="chosen",
+        track_id=track_id,
+        video_duration_s=200.0,
+        track_duration_s=180.0,
+        anchors=[Anchor(0.0, 0.0), Anchor(180.0, 180.0)],
+    )
+    other = Alignment(
+        video_id="other",
+        track_id=track_id,
+        video_duration_s=200.0,
+        track_duration_s=180.0,
+        anchors=[Anchor(0.0, 0.0), Anchor(180.0, 180.0)],
+    )
+    save_alignment(store, chosen)
+    time.sleep(0.01)
+    save_alignment(store, other)
+    video_choice.save_video_choice(track_id, "chosen", tmp_path)
+
+    assert sync_badge_text(track_id, tmp_path) == ("Synced", "synced")
+
+
+def test_player_controls_are_disabled_while_a_worker_runs(tmp_path):
+    from mvsync.gui import MainWindow
+    from mvsync.player_smtc import PlayerState
+
+    window = lock_stand_in(tmp_path)
+    window._state = PlayerState("Artist", "Song", 180.0, 30.0, 100.0, True)
+    window._player_box = FakeWidget()
+    window._refresh_button = FakeWidget()
+    window._busy = True
+    window._action = "play"
+
+    MainWindow._update_buttons(window)
+    assert window._player_box.options["state"] == "disabled"
+    assert window._refresh_button.options["state"] == "disabled"
+
+    window._busy = False
+    window._action = None
+    MainWindow._update_buttons(window)
+    assert window._player_box.options["state"] == "readonly"
+    assert window._refresh_button.options["state"] == "normal"
+
+
+def test_use_video_rechecks_the_track_before_saving(tmp_path):
+    import queue
+
+    from mvsync import gui, video_choice
+    from mvsync.align_store import make_track_id
+    from mvsync.mv_search import Candidate
+    from mvsync.player_smtc import PlayerState
+
+    old_state = PlayerState("Artist", "Song", 180.0, 30.0, 100.0, True)
+    new_state = PlayerState("Artist", "Next", 180.0, 30.0, 100.0, True)
+    track_id = make_track_id(old_state.artist, old_state.title)
+    window = StandInWindow(state=old_state)
+    window._root_dir = tmp_path
+    window._picker_open = True
+    window._picker_track_id = track_id
+    window._picker_candidates = [Candidate("abcdefghijk", "Title", 180.0, "Channel")]
+    window._picker_current_video = None
+    window._picker_tree = type("Tree", (), {"selection": lambda self: ("1",)})()
+    window._action = "play"
+    window._video_switches = queue.Queue()
+    window._close_picker = lambda: None
+    notices = []
+    window._show_notice = lambda message, kind="danger": notices.append(message)
+    window.refresh_track = lambda quiet=False: setattr(window, "_state", new_state)
+
+    gui.MainWindow._use_selected(window)
+
+    assert video_choice.load_video_choice(track_id, tmp_path) is None
+    assert window._video_switches.empty()
+    assert notices and "track changed" in notices[0]
