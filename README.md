@@ -1,7 +1,9 @@
 # mvsync
 
 Play a muted YouTube music video in mpv while the track you are already playing
-stays the master clock.
+stays the master clock. Pick a different video at any time without stopping the
+session; mvsync switches to it immediately and remembers the choice for the
+next play.
 
 ## Install
 
@@ -30,13 +32,20 @@ follow the terms of the services you use.
 1. Start a song or playlist in your media player.
 2. Run `run.bat`. Pick the player in the Player row if it is not selected.
 3. Press `Play`. The video follows the player; a first listen plays roughly and
-   is recorded so the next listen is fully synced.
-4. Use `Scan` to build a map for the current track explicitly, and `Fix MV` to
-   choose a different video. The picker's `Back` button returns to the main
-   window.
+   is recorded so the next listen is fully synced. The now-playing card refreshes
+   every five seconds; press `Refresh` to re-check immediately. Press `Play`
+   again to stop, and close the window to quit.
+4. Use `Scan track` to build a map for the current track explicitly, or
+   `Choose video` to pick a different video without stopping playback. The
+   picker marks the video in use as `Current`; double-click a row to preview it,
+   then press `Use this video` to switch immediately. The choice is remembered
+   for the next play, and the picker's `Back` button returns to the main window.
+   `run.bat fix` remains the standalone full rebuild, which pauses and rewinds
+   the track once while it records a new map.
 5. During playback: `q` quits, `r` resyncs, `[` and `]` trim the offset by
-   50 ms, `p` toggles the player. The mpv window keeps its size and fullscreen
-   state when the video changes.
+   50 ms, `p` toggles the player. The same keys are clickable chips in the main
+   window, since the mpv video window holds focus. The mpv window keeps its size
+   and fullscreen state when the video changes.
 
 ## License
 
