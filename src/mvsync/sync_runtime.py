@@ -15,6 +15,7 @@ offset is persisted on exit.
 from __future__ import annotations
 
 import contextlib
+import queue
 import threading
 import time
 import traceback
@@ -38,6 +39,7 @@ from mvsync.player_smtc import PlayerBridge, PlayerState
 from mvsync.radio import RadioRecording, wait_for_fits
 from mvsync.sync_planner import PlannerConfig, SyncState, plan, target_video_s
 from mvsync.timeline import Alignment
+from mvsync.video_choice import clear_video_choice_if_video, load_video_choice
 
 POLL_S = 0.25
 OFFSET_STEP_S = 0.05
@@ -59,6 +61,14 @@ class PreparedTrack:
     candidates: list[Candidate]
     elapsed_s: float = 0.0
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class VideoSwitch:
+    """A live-session request to swap the current track's video."""
+
+    track_id: str
+    video_id: str
 
 
 class TrackPrep:
@@ -98,6 +108,20 @@ class TrackPrep:
         return self._result if self._done.is_set() else None
 
 
+def _stored_or_choice(
+    store: Path, track_id: str, root: Path | None
+) -> tuple[tuple[Alignment, float, str] | None, str | None]:
+    """The map to use, or a rough video choice that should override older maps."""
+    choice = load_video_choice(track_id, root)
+    if choice is not None:
+        exact = load_alignment(store, choice, track_id)
+        if exact is not None:
+            clear_video_choice_if_video(track_id, choice, root)
+            return (exact[0], exact[1], choice), None
+        return None, choice
+    return load_newest_alignment(store, track_id), None
+
+
 def run_play(
     url: str | None,
     *,
@@ -106,6 +130,7 @@ def run_play(
     pick: int | None = None,
     keys: Callable[[], str] | None = None,
     stop_event: threading.Event | None = None,
+    switches: queue.Queue[VideoSwitch] | None = None,
 ) -> int:
     """Follow the playlist, taking hotkeys from ``keys`` (the console by default)."""
     try:
@@ -116,6 +141,7 @@ def run_play(
             pick=pick,
             keys=_read_key if keys is None else keys,
             stop_event=stop_event,
+            switches=switches,
         )
     except (RuntimeError, ValueError) as exc:
         print(f"[play] failed: {exc}")
@@ -130,6 +156,7 @@ def _run_play(
     pick: int | None,
     keys: Callable[[], str],
     stop_event: threading.Event | None = None,
+    switches: queue.Queue[VideoSwitch] | None = None,
 ) -> int:
     if stop_event is not None and stop_event.is_set():
         return 0
@@ -154,9 +181,11 @@ def _run_play(
         if stored is not None:
             alignment, offset_s = stored
     else:
-        stored = load_newest_alignment(store, track_id)
+        stored, preferred = _stored_or_choice(store, track_id, root)
         if stored is not None:
             alignment, offset_s, video_id = stored
+        elif preferred is not None:
+            url = video_url(preferred)
 
     mpv = MpvController(root)
     session.claim(root)
@@ -218,11 +247,69 @@ def _run_play(
             frozen=frozen,
             keys=keys,
             stop_event=stop_event,
+            switches=switches,
         )
     finally:
         mpv.stop()
         wait_for_fits()
         session.release(root)
+
+
+def _next_switch(switches: queue.Queue[VideoSwitch] | None) -> VideoSwitch | None:
+    """Take one pending video switch without blocking the follow loop."""
+    if switches is None:
+        return None
+    try:
+        return switches.get_nowait()
+    except queue.Empty:
+        return None
+
+
+def _switch_video(
+    state: PlayerState,
+    mpv: MpvController,
+    store: Path,
+    root: Path | None,
+    request: VideoSwitch,
+    *,
+    stop_event: threading.Event | None = None,
+) -> tuple[Alignment | None, float, RadioRecording | None, bool]:
+    """Swap the current track's video, synced when a map exists and rough otherwise."""
+    stored = load_alignment(store, request.video_id, request.track_id)
+    if stored is None:
+        return _start_track(
+            state,
+            mpv,
+            store,
+            root,
+            url=video_url(request.video_id),
+            announce=False,
+            stop_event=stop_event,
+        )
+
+    if stop_event is not None and stop_event.is_set():
+        return None, 0.0, None, True
+    alignment, offset_s = stored
+    position = extrapolate(
+        state.position_s, state.updated_epoch_s, time.time(), state.playing
+    )
+    try:
+        video_file = fetch_video_mp4(video_url(request.video_id), root=root)
+        if stop_event is not None and stop_event.is_set():
+            return None, 0.0, None, True
+        _swap_video(
+            mpv,
+            video_file,
+            seek_to=target_video_s(alignment, position, offset_s),
+            stop_event=stop_event,
+        )
+    except Exception as exc:  # noqa: BLE001 - a bad switch must not end the session
+        print(f"[play] could not switch to {request.video_id} ({exc}); no video")
+        _freeze_video(mpv)
+        return None, 0.0, None, True
+    if stop_event is not None and stop_event.is_set():
+        return None, 0.0, None, True
+    return alignment, offset_s, None, False
 
 
 def _follow(
@@ -237,6 +324,7 @@ def _follow(
     frozen: bool = False,
     keys: Callable[[], str] | None = None,
     stop_event: threading.Event | None = None,
+    switches: queue.Queue[VideoSwitch] | None = None,
 ) -> int:
     """Poll the player and drive mpv from the planner; ``keys`` supplies the hotkeys."""
     config = PlannerConfig()
@@ -254,7 +342,6 @@ def _follow(
         while True:
             if stop_event is not None and stop_event.is_set():
                 break
-            key = keys()
             now = time.time()
             smtc_started = time.monotonic()
             state = bridge.current()
@@ -290,6 +377,47 @@ def _follow(
                 rough_prev_position = rough_prev_wall = rough_prev_video = None
                 continue
 
+            request = _next_switch(switches)
+            if request is not None:
+                if request.track_id != track_id:
+                    print("[play] ignored a video switch for a previous track")
+                else:
+                    print(
+                        f"[play] switching video to {request.video_id} "
+                        f"({state.artist} - {state.title})"
+                    )
+                    try:
+                        if radio is not None:
+                            radio.finish()
+                            radio = None
+                        if prep is not None:
+                            prep.cancel()
+                            prep = None
+                        if offset_dirty and alignment is not None:
+                            save_alignment(
+                                paths.ensure_dir(store), alignment, offset_s=offset
+                            )
+                            print(f"[play] saved offset {offset:+.2f}s")
+                            offset_dirty = False
+                        alignment, offset, radio, frozen = _switch_video(
+                            state,
+                            mpv,
+                            store,
+                            root,
+                            request,
+                            stop_event=stop_event,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - keep following after a bad switch
+                        print(f"[play] could not switch video ({exc}); continuing frozen")
+                        _freeze_video(mpv)
+                        alignment, offset, radio, frozen = None, 0.0, None, True
+                    if stop_event is not None and stop_event.is_set():
+                        break
+                    last_rate = 1.0
+                    idle_since = None
+                    rough_prev_position = rough_prev_wall = rough_prev_video = None
+                    continue
+
             devlog.log(
                 "poll",
                 track_id=track_id,
@@ -299,6 +427,7 @@ def _follow(
                 smtc_ms=smtc_ms,
             )
 
+            key = keys()
             if key == "q":
                 break
             if key in ("[", "]"):
@@ -556,6 +685,8 @@ def _prepare_track(
     stored: tuple[Alignment, float, str] | None,
     root: Path | None,
     cancel: threading.Event,
+    *,
+    preferred_video: str | None = None,
 ) -> PreparedTrack:
     """Resolve one track's video; runs off the follow loop in the prep worker."""
     started = time.monotonic()
@@ -576,6 +707,24 @@ def _prepare_track(
             elapsed_s=round(time.monotonic() - started, 2),
         )
         return PreparedTrack(alignment, offset_s, video_file, [], time.monotonic() - started)
+
+    if preferred_video is not None:
+        candidates = [Candidate(preferred_video, "", None, "")]
+        if cancel.is_set():
+            return PreparedTrack(None, 0.0, None, candidates, time.monotonic() - started)
+        try:
+            video_file = fetch_video_mp4(video_url(preferred_video), root=root)
+        except RuntimeError as exc:
+            return PreparedTrack(
+                None, 0.0, None, candidates, time.monotonic() - started, str(exc)
+            )
+        devlog.log(
+            "fetch_done",
+            video_id=preferred_video,
+            mapped=False,
+            elapsed_s=round(time.monotonic() - started, 2),
+        )
+        return PreparedTrack(None, 0.0, video_file, candidates, time.monotonic() - started)
 
     search_started = time.monotonic()
     try:
@@ -616,12 +765,13 @@ def _begin_track(
         print("[play] the player reports no track metadata; waiting for it to update")
         _freeze_video(mpv)
         return track_id, None, 0.0, None, None
-    stored = load_newest_alignment(store, track_id)
+    stored, preferred = _stored_or_choice(store, track_id, root)
     radio: RadioRecording | None = None
     if stored is not None:
         print(f"[play] now: {state.artist} - {state.title} (synced); loading its video")
     else:
-        print(f"[play] now: {state.artist} - {state.title} (new: finding the MV)")
+        detail = f"using chosen video {preferred}" if preferred else "finding the MV"
+        print(f"[play] now: {state.artist} - {state.title} (new: {detail})")
         wall = time.time()
         position = extrapolate(state.position_s, state.updated_epoch_s, wall, state.playing)
         radio = RadioRecording(
@@ -642,7 +792,11 @@ def _begin_track(
         mapped=stored is not None,
         position_s=round(state.position_s, 3),
     )
-    prep = TrackPrep(lambda cancel: _prepare_track(state, stored, root, cancel))
+    prep = TrackPrep(
+        lambda cancel: _prepare_track(
+            state, stored, root, cancel, preferred_video=preferred
+        )
+    )
     return track_id, None, 0.0, radio, prep
 
 
@@ -702,6 +856,8 @@ def _swap_video(
     seek_to: float | None = None,
     stop_event: threading.Event | None = None,
 ) -> None:
+    if stop_event is not None and stop_event.is_set():
+        return
     started = time.monotonic()
     fullscreen: bool | None = None
     with contextlib.suppress(Exception):

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 
-from mvsync import paths
+import pytest
+
+from mvsync import paths, video_choice
 from mvsync.align_store import make_track_id, save_alignment
 from mvsync.mv_search import Candidate
 from mvsync.player_smtc import PlayerState
@@ -429,9 +432,10 @@ def test_play_reads_hotkeys_from_the_injected_source(tmp_path, monkeypatch):
         return pushed.pop(0) if pushed else ""
 
     monkeypatch.setattr(sr, "MpvController", lambda root: FakeMpv())
-    # One state is enough: _follow polls keys() at the top of the loop, before it reads
-    # the session, so the injected "q" ends the run before the vanished session does.
-    monkeypatch.setattr(sr, "PlayerBridge", lambda: FakeBridge([make_state()]))
+    # The initial track consumes one state; _follow needs another before it polls the key.
+    monkeypatch.setattr(
+        sr, "PlayerBridge", lambda: FakeBridge([make_state(), make_state()])
+    )
     # The real search raises instead of returning an empty list, which _start_track needs.
     monkeypatch.setattr(
         sr, "pick_mv_candidates", lambda *a, **k: [Candidate("vid1", "t", 180.0, "c")]
@@ -723,3 +727,364 @@ def test_begin_track_prepares_a_mapped_track_without_a_recording(tmp_path, monke
     assert prepared is not None
     assert prepared.alignment is not None
     assert prepared.video_file == Path("vidx.mkv")
+
+
+def test_play_choice_overrides_an_older_alignment(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    state = make_state()
+    track_id = make_track_id(state.artist, state.title)
+    save_stored(tmp_path, "oldvid", track_id)
+    video_choice.save_video_choice(track_id, "newvideo123", tmp_path)
+    video_file = tmp_path / "new.mkv"
+    fetched: list[str] = []
+    mpv = FakeMpv(path=video_file.name, duration=200.0)
+    monkeypatch.setattr(sr, "MpvController", lambda root: mpv)
+    monkeypatch.setattr(sr, "PlayerBridge", lambda: FakeBridge([state, state]))
+    monkeypatch.setattr(sr, "RadioRecording", StubRadio)
+    monkeypatch.setattr(
+        sr,
+        "fetch_video_mp4",
+        lambda url, root=None: fetched.append(url) or video_file,
+    )
+    monkeypatch.setattr(
+        sr,
+        "pick_mv_candidates",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("searched")),
+    )
+
+    assert sr.run_play(None, root=tmp_path, poll_s=0.01, keys=lambda: "") == 0
+    assert fetched and "newvideo123" in fetched[0]
+    assert ("load", str(video_file)) in mpv.calls
+    assert video_choice.load_video_choice(track_id, tmp_path) == "newvideo123"
+
+
+def test_play_choice_with_a_matching_map_clears_the_choice(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    state = make_state()
+    track_id = make_track_id(state.artist, state.title)
+    save_stored(tmp_path, "newvideo123", track_id)
+    video_choice.save_video_choice(track_id, "newvideo123", tmp_path)
+    video_file = tmp_path / "new.mkv"
+    mpv = FakeMpv(path=video_file.name, duration=200.0)
+    monkeypatch.setattr(sr, "MpvController", lambda root: mpv)
+    monkeypatch.setattr(sr, "PlayerBridge", lambda: FakeBridge([state, state]))
+    monkeypatch.setattr(sr, "fetch_video_mp4", lambda url, root=None: video_file)
+
+    assert sr.run_play(None, root=tmp_path, poll_s=0.01, keys=lambda: "") == 0
+    assert ("load", str(video_file)) in mpv.calls
+    assert video_choice.load_video_choice(track_id, tmp_path) is None
+
+
+def test_prepare_track_uses_the_preferred_video_without_search(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    state = make_state()
+    video_file = tmp_path / "new.mkv"
+    video_file.write_bytes(b"x")
+    monkeypatch.setattr(sr, "fetch_video_mp4", lambda url, root=None: video_file)
+    monkeypatch.setattr(
+        sr,
+        "pick_mv_candidates",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("searched")),
+    )
+
+    prepared = sr._prepare_track(
+        state, None, tmp_path, threading.Event(), preferred_video="newvideo123"
+    )
+
+    assert prepared.video_file == video_file
+    assert prepared.alignment is None
+    assert [candidate.video_id for candidate in prepared.candidates] == ["newvideo123"]
+
+
+def test_follow_switches_to_a_rough_video_without_stopping(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    state = make_state()
+    track_id = make_track_id(state.artist, state.title)
+    video_file = tmp_path / "new.mkv"
+    fetched: list[str] = []
+    recordings: list[StubRadio] = []
+
+    def make_radio(**kwargs):
+        recording = StubRadio(**kwargs)
+        recordings.append(recording)
+        return recording
+
+    mpv = FakeMpv(path=video_file.name, duration=200.0)
+    monkeypatch.setattr(
+        sr,
+        "fetch_video_mp4",
+        lambda url, root=None: fetched.append(url) or video_file,
+    )
+    monkeypatch.setattr(sr, "RadioRecording", make_radio)
+    monkeypatch.setattr(
+        sr,
+        "pick_mv_candidates",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("searched")),
+    )
+    switches: queue.Queue[sr.VideoSwitch] = queue.Queue()
+    switches.put(sr.VideoSwitch(track_id, "newvideo123"))
+
+    rc = sr._follow(
+        FakeBridge([state, state, state]),
+        mpv,
+        track_id,
+        None,
+        0.0,
+        tmp_path,
+        0.01,
+        radio=None,
+        frozen=True,
+        switches=switches,
+    )
+
+    assert rc == 0
+    assert fetched and "newvideo123" in fetched[0]
+    assert ("load", str(video_file)) in mpv.calls
+    assert recordings and recordings[-1].started is True
+    assert recordings[-1].candidates[0].video_id == "newvideo123"
+
+
+def test_follow_switches_to_a_mapped_video_synced(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    state = make_state(position_s=30.0)
+    track_id = make_track_id(state.artist, state.title)
+    save_stored(tmp_path, "newvideo123", track_id)
+    video_file = tmp_path / "new.mkv"
+    mpv = FakeMpv(path=video_file.name, duration=200.0)
+    monkeypatch.setattr(sr, "fetch_video_mp4", lambda url, root=None: video_file)
+    monkeypatch.setattr(
+        sr,
+        "RadioRecording",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("new recording")),
+    )
+    switches: queue.Queue[sr.VideoSwitch] = queue.Queue()
+    switches.put(sr.VideoSwitch(track_id, "newvideo123"))
+
+    rc = sr._follow(
+        FakeBridge([state, state, state]),
+        mpv,
+        track_id,
+        None,
+        0.0,
+        tmp_path,
+        0.01,
+        radio=None,
+        frozen=True,
+        switches=switches,
+    )
+
+    assert rc == 0
+    assert ("load", str(video_file)) in mpv.calls
+    seeks = [call[1] for call in mpv.calls if call[0] == "seek"]
+    assert seeks and seeks[0] == pytest.approx(35.0, abs=0.1)
+
+
+def test_follow_ignores_a_switch_for_a_previous_track(tmp_path, monkeypatch, capsys):
+    import mvsync.sync_runtime as sr
+
+    state = make_state()
+    track_id = make_track_id(state.artist, state.title)
+    mpv = FakeMpv()
+    monkeypatch.setattr(
+        sr,
+        "fetch_video_mp4",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fetched")),
+    )
+    switches: queue.Queue[sr.VideoSwitch] = queue.Queue()
+    switches.put(sr.VideoSwitch("previous-track", "newvideo123"))
+
+    rc = sr._follow(
+        FakeBridge([state, state]),
+        mpv,
+        track_id,
+        None,
+        0.0,
+        tmp_path,
+        0.01,
+        radio=None,
+        frozen=False,
+        switches=switches,
+    )
+
+    assert rc == 0
+    assert mpv.calls == []
+    assert "ignored a video switch for a previous track" in capsys.readouterr().out
+
+
+def test_follow_switch_finishes_the_old_recording(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    state = make_state()
+    track_id = make_track_id(state.artist, state.title)
+    video_file = tmp_path / "new.mkv"
+    old_radio = StubRadio()
+    mpv = FakeMpv(path=video_file.name, duration=200.0)
+    monkeypatch.setattr(sr, "fetch_video_mp4", lambda url, root=None: video_file)
+    monkeypatch.setattr(sr, "RadioRecording", lambda **kwargs: StubRadio(**kwargs))
+    switches: queue.Queue[sr.VideoSwitch] = queue.Queue()
+    switches.put(sr.VideoSwitch(track_id, "newvideo123"))
+
+    sr._follow(
+        FakeBridge([state, state, state]),
+        mpv,
+        track_id,
+        None,
+        0.0,
+        tmp_path,
+        0.01,
+        radio=old_radio,
+        frozen=False,
+        switches=switches,
+    )
+
+    assert old_radio.finished is True
+
+
+
+def test_follow_switch_cancels_a_pending_prep(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    state_a = make_state(artist="Artist A", title="One")
+    state_b = make_state(artist="Artist B", title="Two")
+    track_a = make_track_id(state_a.artist, state_a.title)
+    track_b = make_track_id(state_b.artist, state_b.title)
+    video_file = tmp_path / "new.mkv"
+    preps = []
+
+    class FakePrep:
+        def __init__(self, work):
+            self.cancelled = False
+            preps.append(self)
+
+        def poll(self):
+            return None
+
+        def cancel(self):
+            self.cancelled = True
+
+    mpv = FakeMpv(path=video_file.name, duration=200.0)
+    monkeypatch.setattr(sr, "fetch_video_mp4", lambda url, root=None: video_file)
+    monkeypatch.setattr(sr, "RadioRecording", lambda **kwargs: StubRadio(**kwargs))
+    monkeypatch.setattr(sr, "TrackPrep", FakePrep)
+    switches: queue.Queue[sr.VideoSwitch] = queue.Queue()
+    switches.put(sr.VideoSwitch(track_a, "oldvideo123"))
+    switches.put(sr.VideoSwitch(track_b, "newvideo123"))
+
+    rc = sr._follow(
+        FakeBridge([state_a, state_b, state_b, state_b, state_b]),
+        mpv,
+        track_a,
+        None,
+        0.0,
+        tmp_path,
+        0.01,
+        radio=None,
+        frozen=False,
+        switches=switches,
+    )
+
+    assert rc == 0
+    assert preps and preps[0].cancelled is True
+
+
+def test_play_choice_uses_its_own_map_even_when_another_is_newer(tmp_path):
+    import mvsync.sync_runtime as sr
+    from mvsync.align_store import load_newest_alignment
+
+    track_id = make_track_id("Artist", "Song")
+    save_stored(tmp_path, "video-a", track_id)
+    time.sleep(0.01)
+    save_stored(tmp_path, "video-b", track_id)
+    video_choice.save_video_choice(track_id, "video-a", tmp_path)
+    store = paths.alignments_dir(tmp_path)
+
+    newest = load_newest_alignment(store, track_id)
+    stored, preferred = sr._stored_or_choice(store, track_id, tmp_path)
+
+    assert newest is not None and newest[2] == "video-b"
+    assert preferred is None
+    assert stored is not None and stored[2] == "video-a"
+    assert video_choice.load_video_choice(track_id, tmp_path) is None
+
+
+def test_swap_video_does_not_load_when_stop_is_set():
+    from pathlib import Path
+
+    import mvsync.sync_runtime as sr
+
+    stop = threading.Event()
+    stop.set()
+    mpv = FakeMpv()
+
+    sr._swap_video(mpv, Path("new.mkv"), stop_event=stop)
+
+    assert mpv.calls == []
+
+
+def test_switch_video_does_not_fetch_or_clear_when_stop_is_set(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    state = make_state()
+    track_id = make_track_id(state.artist, state.title)
+    save_stored(tmp_path, "newvideo123", track_id)
+    video_choice.save_video_choice(track_id, "newvideo123", tmp_path)
+    stop = threading.Event()
+    stop.set()
+    fetched = []
+    mpv = FakeMpv()
+    monkeypatch.setattr(
+        sr,
+        "fetch_video_mp4",
+        lambda *args, **kwargs: fetched.append(True) or (tmp_path / "new.mkv"),
+    )
+
+    result = sr._switch_video(
+        state,
+        mpv,
+        paths.alignments_dir(tmp_path),
+        tmp_path,
+        sr.VideoSwitch(track_id, "newvideo123"),
+        stop_event=stop,
+    )
+
+    assert result == (None, 0.0, None, True)
+    assert fetched == []
+    assert mpv.calls == []
+    assert video_choice.load_video_choice(track_id, tmp_path) == "newvideo123"
+
+
+def test_a_broken_recording_finish_does_not_end_the_play_session(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    class BadRadio(StubRadio):
+        def finish(self):
+            raise RuntimeError("capture close failed")
+
+    state = make_state()
+    track_id = make_track_id(state.artist, state.title)
+    video_file = tmp_path / "new.mkv"
+    mpv = FakeMpv(path=video_file.name, duration=200.0)
+    monkeypatch.setattr(sr, "fetch_video_mp4", lambda url, root=None: video_file)
+    monkeypatch.setattr(sr, "RadioRecording", lambda **kwargs: StubRadio(**kwargs))
+    switches: queue.Queue[sr.VideoSwitch] = queue.Queue()
+    switches.put(sr.VideoSwitch(track_id, "newvideo123"))
+
+    rc = sr._follow(
+        FakeBridge([state, state, state]),
+        mpv,
+        track_id,
+        None,
+        0.0,
+        tmp_path,
+        0.01,
+        radio=BadRadio(),
+        frozen=False,
+        switches=switches,
+    )
+
+    assert rc == 0
