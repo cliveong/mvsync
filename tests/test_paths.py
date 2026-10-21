@@ -13,6 +13,7 @@ def test_data_dirs_live_under_root(tmp_path):
     assert paths.cache_dir(tmp_path) == tmp_path / "data" / "cache"
     assert paths.recordings_dir(tmp_path) == tmp_path / "data" / "recordings"
     assert paths.alignments_dir(tmp_path) == tmp_path / "data" / "alignments"
+    assert paths.video_choices_path(tmp_path) == tmp_path / "data" / "video_choices.json"
 
 
 def test_ensure_dir_creates_nested_dir(tmp_path):

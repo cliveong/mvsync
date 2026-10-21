@@ -562,3 +562,22 @@ def test_scan_with_candidates_discards_recording_on_abort(tmp_path, monkeypatch)
         run_scan_with_candidates(monkeypatch, tmp_path, align=align)
 
     assert not recording_path(tmp_path).exists()
+
+
+def test_explicit_scan_clears_any_choice(tmp_path, monkeypatch):
+    from mvsync import video_choice
+
+    alignment = Alignment(
+        video_id=VIDEO_ID,
+        track_id=TRACK_ID,
+        video_duration_s=40.0,
+        track_duration_s=DURATION,
+        anchors=[Anchor(video_s=0.0, spotify_s=0.0), Anchor(video_s=20.0, spotify_s=20.0)],
+    )
+    video_choice.save_video_choice(TRACK_ID, "othervid", tmp_path)
+
+    run_scan_with_candidates(
+        monkeypatch, tmp_path, align=lambda *args, **kwargs: (alignment, VIDEO_ID)
+    )
+
+    assert video_choice.load_video_choice(TRACK_ID, tmp_path) is None

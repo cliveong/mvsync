@@ -28,6 +28,7 @@ from mvsync.match import (
 from mvsync.mv_audio import wav_duration_s
 from mvsync.mv_search import Candidate
 from mvsync.player_smtc import PlayerState
+from mvsync.video_choice import clear_video_choice_if_video
 
 PAUSE_DIRTY_S = 2.0
 COVERAGE_SLACK_S = 5.0
@@ -302,6 +303,7 @@ def _fit_in_background(
         saved = save_alignment(
             paths.ensure_dir(paths.alignments_dir(root)), alignment, offset_s=-offset_s
         )
+        clear_video_choice_if_video(track_id, video_id, root)
         devlog.log("fit_done", track_id=track_id, video_id=video_id, map=saved.name)
         print(f"[play] {label}: aligned to {video_id} ({saved.name}); synced on the next listen")
     except Exception as exc:  # noqa: BLE001 - a background thread must never kill playback

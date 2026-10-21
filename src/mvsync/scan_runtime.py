@@ -31,6 +31,7 @@ from mvsync.mv_audio import fetch_video_mp4, parse_video_id, wav_duration_s
 from mvsync.mv_search import Candidate, candidate_lines, pick_mv_candidates, prioritize, video_url
 from mvsync.player_smtc import PlayerBridge, PlayerState
 from mvsync.radio import _discard
+from mvsync.video_choice import clear_video_choice
 
 POLL_S = 0.25
 TRIM_SAFETY_S = 0.05
@@ -237,6 +238,7 @@ def _record_and_fit(
         removed = prune_other_alignments(store, track_id, video_id)
         if removed:
             print(f"[scan] removed {len(removed)} superseded alignment(s)")
+        clear_video_choice(track_id, root)
         on_progress("saved")
 
         print("[scan] fetching the MV video (cached after the first run)")

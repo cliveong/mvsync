@@ -923,3 +923,52 @@ def test_candidates_can_arrive_after_the_recording_starts(tmp_path, monkeypatch)
     assert [candidate.video_id for candidate in fitted[0][1]] == ["vid"]
     assert (rec_path.parent / "vid__t.wav").exists()
     assert not rec_path.exists()
+
+
+def test_fit_clears_the_matching_choice(tmp_path, monkeypatch):
+    from mvsync import paths, radio, video_choice
+    from mvsync.align_store import alignment_path
+
+    recording = _write_silent_wav(tmp_path / "rec.wav")
+    alignment = make_alignment(20)
+    video_choice.save_video_choice("track", "video", tmp_path)
+    monkeypatch.setattr(
+        radio, "align_against_candidates", lambda *args, **kwargs: (alignment, "video")
+    )
+
+    radio._fit_in_background(
+        recording,
+        [Candidate("video", "", None, "")],
+        "track",
+        "artist - title",
+        200.0,
+        0.0,
+        tmp_path,
+    )
+
+    assert video_choice.load_video_choice("track", tmp_path) is None
+    store = paths.ensure_dir(paths.alignments_dir(tmp_path))
+    assert alignment_path(store, "video", "track").is_file()
+
+
+def test_fit_keeps_a_newer_different_choice(tmp_path, monkeypatch):
+    from mvsync import radio, video_choice
+
+    recording = _write_silent_wav(tmp_path / "rec.wav")
+    alignment = make_alignment(20)
+    video_choice.save_video_choice("track", "newer", tmp_path)
+    monkeypatch.setattr(
+        radio, "align_against_candidates", lambda *args, **kwargs: (alignment, "video")
+    )
+
+    radio._fit_in_background(
+        recording,
+        [Candidate("video", "", None, "")],
+        "track",
+        "artist - title",
+        200.0,
+        0.0,
+        tmp_path,
+    )
+
+    assert video_choice.load_video_choice("track", tmp_path) == "newer"

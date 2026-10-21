@@ -55,6 +55,10 @@ def config_path(root: Path | None = None) -> Path:
     return data_dir(root) / "config.json"
 
 
+def video_choices_path(root: Path | None = None) -> Path:
+    return data_dir(root) / "video_choices.json"
+
+
 def mpv_config_dir(root: Path | None = None) -> Path:
     return tools_dir(root) / "mpv-config"
 
