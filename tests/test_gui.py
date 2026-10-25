@@ -1035,6 +1035,90 @@ def test_a_successful_rebuild_closes_the_window():
     assert window.refreshed == 1
 
 
+class StandInLinkVar:
+    """Stand-in for a tk StringVar: get and set never touch a Tk root."""
+
+    def __init__(self, value=""):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+def link_fixer(text):
+    from mvsync.gui import FixerWindow
+
+    window = StandInFixer()
+    window._link_var = StandInLinkVar(text)
+    window._status_label = FakeWidget()
+    window._state = None
+    window.rebuilt = []
+    window._rebuild = lambda candidates: window.rebuilt.append(candidates)
+    return window, FixerWindow
+
+
+def test_use_link_rebuilds_with_the_pasted_video():
+    window, fixer = link_fixer("https://www.youtube.com/watch?v=Mmw-PpWhKFg")
+
+    fixer.use_link(window)
+
+    assert [[candidate.video_id for candidate in group] for group in window.rebuilt] == [
+        ["Mmw-PpWhKFg"]
+    ]
+
+
+def test_use_link_rebuilds_from_a_bare_video_id():
+    window, fixer = link_fixer("Mmw-PpWhKFg")
+
+    fixer.use_link(window)
+
+    assert [[candidate.video_id for candidate in group] for group in window.rebuilt] == [
+        ["Mmw-PpWhKFg"]
+    ]
+
+
+def test_use_link_rejects_text_that_is_not_a_link():
+    window, fixer = link_fixer("not a link")
+
+    fixer.use_link(window)
+
+    assert window.rebuilt == []
+    assert "link" in window._status_label.options["text"]
+
+
+def test_use_link_without_text_asks_for_one():
+    window, fixer = link_fixer("   ")
+
+    fixer.use_link(window)
+
+    assert window.rebuilt == []
+    assert "Paste" in window._status_label.options["text"]
+
+
+def test_a_track_change_clears_a_pending_link(tmp_path, monkeypatch):
+    from mvsync import gui
+
+    window = StandInFixer()
+    window._state = None
+    window._track_id = "old"
+    window._root_dir = tmp_path
+    window._candidates = []
+    window._in_use_video_id = None
+    window._link_var = StandInLinkVar("https://youtu.be/abcdefghijk")
+    window._track_label = FakeWidget()
+    window._status_label = FakeWidget()
+    window._fill_table = lambda: None
+    window._update_buttons = lambda: None
+    monkeypatch.setattr(gui, "PlayerBridge", FakeBridge)
+
+    gui.FixerWindow.refresh_track(window)
+
+    assert window._link_var.get() == ""
+
+
 def test_player_index_prefers_the_configured_match():
     from mvsync.gui import player_index
     from mvsync.player_smtc import PlayerSession

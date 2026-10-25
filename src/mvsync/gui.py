@@ -1710,6 +1710,46 @@ class FixerWindow(ctk.CTk):
         self._tree.bind("<Double-1>", lambda event: self.open_selected())
         self._tree.bind("<Return>", lambda event: self.use_selected())
 
+        link_card = ctk.CTkFrame(
+            shell,
+            fg_color=gui_theme.STONE,
+            corner_radius=18,
+            border_width=1,
+            border_color=gui_theme.BORDER,
+        )
+        link_card.pack(fill="x", pady=(12, 0))
+        link_inner = ctk.CTkFrame(link_card, fg_color="transparent")
+        link_inner.pack(fill="x", padx=12, pady=10)
+        ctk.CTkLabel(
+            link_inner,
+            text="Use a specific video",
+            font=self._fonts.small,
+            text_color=gui_theme.MUTED,
+        ).pack(side="left", padx=(0, 10))
+        self._link_var = tk.StringVar()
+        self._link_entry = tk.Entry(
+            link_inner,
+            textvariable=self._link_var,
+            bg=gui_theme.STONE,
+            fg=gui_theme.INK,
+            insertbackground=gui_theme.INK,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=gui_theme.BORDER,
+            highlightcolor=gui_theme.MOSS,
+            font=self._fonts.body,
+        )
+        self._link_entry.pack(side="left", fill="x", expand=True, ipady=6)
+        self._link_entry.bind("<Return>", lambda event: self.use_link())
+        self._link_button = ctk.CTkButton(
+            link_inner,
+            text="Use link",
+            command=self.use_link,
+            font=self._fonts.small_bold,
+            **gui_theme.button_style("secondary"),
+        )
+        self._link_button.pack(side="right", padx=(10, 0))
+
         bottom = ctk.CTkFrame(shell, fg_color="transparent")
         bottom.pack(fill="x", pady=(12, 0))
         self._use_button = ctk.CTkButton(
@@ -1799,6 +1839,7 @@ class FixerWindow(ctk.CTk):
         self._use_button.configure(state=choice)
         self._open_button.configure(state=choice)
         self._copy_button.configure(state=choice)
+        self._link_button.configure(state=ready)
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -1841,6 +1882,7 @@ class FixerWindow(ctk.CTk):
             self._track_id = track_id
             self._candidates = []
             self._in_use_video_id = None
+            self._link_var.set("")
         self._track_label.configure(
             text=(
                 "No player session"
@@ -1912,13 +1954,35 @@ class FixerWindow(ctk.CTk):
         self.clipboard_append(video_url(candidate.video_id))
         self._status_label.configure(text="Link copied")
 
+    def use_link(self) -> None:
+        """Rebuild against a pasted YouTube link or bare video id."""
+        text = self._link_var.get().strip()
+        if not text:
+            self._status_label.configure(text="Paste a YouTube link first.")
+            return
+        try:
+            video_id = parse_video_id(text)
+        except ValueError:
+            self._status_label.configure(text="That is not a YouTube link.")
+            return
+        self._rebuild(
+            [Candidate(video_id=video_id, title="", duration_s=None, channel="")]
+        )
+
     def use_selected(self) -> None:
         index = self._selected_index()
-        state = self._state
-        if index is None or state is None or not self._candidates:
+        if index is None or not self._candidates:
             self._status_label.configure(text="Select a video first.")
             return
-        candidate = self._candidates[index - 1]
+        self._rebuild(prioritize(self._candidates, index))
+
+    def _rebuild(self, candidates: list[Candidate]) -> None:
+        """Confirm, then record against the given candidates, best first."""
+        candidate = candidates[0]
+        state = self._state
+        if state is None:
+            self._status_label.configure(text="Start a song in your player first.")
+            return
         question = (
             f"Rebuild the map for {state.artist} - {state.title} using "
             f"{candidate.title or candidate.video_id}?\n\n"
@@ -1927,14 +1991,13 @@ class FixerWindow(ctk.CTk):
         )
         if not messagebox.askyesno("mvsync", question):
             return
-        ordered = prioritize(self._candidates, index)
         self._set_busy(True)
         self._log(f"scanning with {candidate.video_id}")
 
         def work() -> None:
             try:
                 result = scan_with_candidates(
-                    ordered,
+                    candidates,
                     root=self._root_dir,
                     on_progress=lambda message: self.after(0, self._log, message),
                 )
