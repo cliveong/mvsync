@@ -149,6 +149,11 @@ class StandInWindow:
 
         return MainWindow._auto_refresh(self)
 
+    def _use_candidate(self, candidate):
+        from mvsync.gui import MainWindow
+
+        return MainWindow._use_candidate(self, candidate)
+
 
 class ThreadCheckedUrlVar:
     """Stand-in for tk.StringVar: get() refuses to run off the thread that made it.
@@ -1117,6 +1122,102 @@ def test_a_track_change_clears_a_pending_link(tmp_path, monkeypatch):
     gui.FixerWindow.refresh_track(window)
 
     assert window._link_var.get() == ""
+
+
+def picker_link_window(tmp_path, text):
+    import queue
+
+    from mvsync.align_store import make_track_id
+    from mvsync.player_smtc import PlayerState
+
+    state = PlayerState("Artist", "Song", 180.0, 30.0, 100.0, True)
+    track_id = make_track_id(state.artist, state.title)
+    window = StandInWindow(state=state)
+    window._root_dir = tmp_path
+    window._picker_open = True
+    window._picker_track_id = track_id
+    window._picker_candidates = []
+    window._picker_current_video = None
+    window._picker_link_var = StandInLinkVar(text)
+    window._action = "play"
+    window._video_switches = queue.Queue()
+    window.closed = []
+    window.notices = []
+    window._close_picker = lambda: window.closed.append(True)
+    window._show_notice = lambda message, kind="danger": window.notices.append(message)
+    return window, track_id
+
+
+def test_picker_use_link_saves_the_choice_and_queues_a_switch(tmp_path):
+    from mvsync import gui, video_choice
+
+    window, track_id = picker_link_window(
+        tmp_path, "https://www.youtube.com/watch?v=Mmw-PpWhKFg"
+    )
+
+    gui.MainWindow.use_link(window)
+
+    assert video_choice.load_video_choice(track_id, tmp_path) == "Mmw-PpWhKFg"
+    switch = window._video_switches.get_nowait()
+    assert (switch.track_id, switch.video_id) == (track_id, "Mmw-PpWhKFg")
+    assert window.closed == [True]
+
+
+def test_picker_use_link_rejects_text_that_is_not_a_link(tmp_path):
+    from mvsync import gui, video_choice
+
+    window, track_id = picker_link_window(tmp_path, "not a link")
+
+    gui.MainWindow.use_link(window)
+
+    assert video_choice.load_video_choice(track_id, tmp_path) is None
+    assert window.closed == []
+    assert window.notices and "link" in window.notices[0]
+
+
+def test_picker_use_link_without_text_asks_for_one(tmp_path):
+    from mvsync import gui, video_choice
+
+    window, track_id = picker_link_window(tmp_path, "   ")
+
+    gui.MainWindow.use_link(window)
+
+    assert video_choice.load_video_choice(track_id, tmp_path) is None
+    assert window.notices and "Paste" in window.notices[0]
+
+
+def test_opening_the_picker_clears_a_stale_link(tmp_path):
+    from mvsync import gui
+
+    window, _ = picker_link_window(tmp_path, "https://youtu.be/abcdefghijk")
+    window._picker_open = False
+    window._picker_search_button = FakeWidget()
+    window._picker_track_label = FakeWidget()
+    window._picker_status = FakeWidget()
+    window._fill_picker_table = lambda: None
+    window._update_picker_buttons = lambda: None
+    window._show_picker_view = lambda: None
+
+    gui.MainWindow.open_picker(window)
+
+    assert window._picker_link_var.get() == ""
+
+
+def test_a_picker_track_change_clears_a_pending_link(tmp_path):
+    from mvsync import gui
+    from mvsync.player_smtc import PlayerState
+
+    window, _ = picker_link_window(tmp_path, "https://youtu.be/abcdefghijk")
+    window._state = PlayerState("Artist", "Other", 180.0, 30.0, 100.0, True)
+    window._picker_search_button = FakeWidget()
+    window._picker_track_label = FakeWidget()
+    window._picker_status = FakeWidget()
+    window._fill_picker_table = lambda: None
+    window._update_picker_buttons = lambda: None
+
+    gui.MainWindow._reset_picker_track(window)
+
+    assert window._picker_link_var.get() == ""
 
 
 def test_player_index_prefers_the_configured_match():

@@ -684,6 +684,47 @@ class MainWindow(ctk.CTk):
         self._picker_tree.bind("<Double-1>", lambda event: self.open_selected())
         self._picker_tree.bind("<Return>", lambda event: self._use_selected())
 
+        picker_link_card = ctk.CTkFrame(
+            self._picker_view,
+            fg_color=gui_theme.STONE,
+            corner_radius=18,
+            border_width=1,
+            border_color=gui_theme.BORDER,
+        )
+        picker_link_card.pack(fill="x", pady=(12, 0))
+        picker_link_inner = ctk.CTkFrame(picker_link_card, fg_color="transparent")
+        picker_link_inner.pack(fill="x", padx=12, pady=10)
+        ctk.CTkLabel(
+            picker_link_inner,
+            text="Use a specific video",
+            font=self._fonts.small,
+            text_color=gui_theme.MUTED,
+        ).pack(side="left", padx=(0, 10))
+        self._picker_link_var = tk.StringVar()
+        self._picker_link_entry = tk.Entry(
+            picker_link_inner,
+            textvariable=self._picker_link_var,
+            bg=gui_theme.STONE,
+            fg=gui_theme.INK,
+            insertbackground=gui_theme.INK,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=gui_theme.BORDER,
+            highlightcolor=gui_theme.MOSS,
+            font=self._fonts.body,
+        )
+        self._picker_link_entry.pack(side="left", fill="x", expand=True, ipady=6)
+        self._picker_link_entry.bind("<Return>", lambda event: self.use_link())
+        self._key_consumers = (*self._key_consumers, self._picker_link_entry)
+        self._picker_link_button = ctk.CTkButton(
+            picker_link_inner,
+            text="Use link",
+            command=self.use_link,
+            font=self._fonts.small_bold,
+            **gui_theme.button_style("secondary"),
+        )
+        self._picker_link_button.pack(side="right", padx=(10, 0))
+
         picker_footer = ctk.CTkFrame(self._picker_view, fg_color="transparent")
         picker_footer.pack(fill="x", pady=(12, 0))
         self._picker_use = ctk.CTkButton(
@@ -972,6 +1013,7 @@ class MainWindow(ctk.CTk):
         self._picker_open = True
         self._picker_track_id = track_id
         self._picker_candidates = []
+        self._picker_link_var.set("")
         newest = load_newest_alignment(paths.alignments_dir(self._root_dir), track_id)
         self._picker_current_video = video_choice.load_video_choice(track_id, self._root_dir)
         if self._picker_current_video is None and newest is not None:
@@ -1068,6 +1110,7 @@ class MainWindow(ctk.CTk):
         self._picker_busy = False
         self._picker_candidates = []
         self._picker_current_video = None
+        self._picker_link_var.set("")
         self._picker_search_button.configure(state="normal")
         self._picker_track_label.configure(
             text=f"{state.artist or 'Unknown artist'} - {state.title or 'Unknown title'}"
@@ -1095,8 +1138,34 @@ class MainWindow(ctk.CTk):
         self._picker_use.configure(state=state)
         self._picker_open_button.configure(state=state)
         self._picker_copy_button.configure(state=state)
+        self._picker_link_button.configure(
+            state="disabled" if self._picker_busy else "normal"
+        )
 
     def _use_selected(self) -> None:
+        candidate = self._selected_candidate()
+        if candidate is None:
+            self._show_notice("Select a video first.", "info")
+            return
+        self._use_candidate(candidate)
+
+    def use_link(self) -> None:
+        """Use a pasted YouTube link or bare video id as this track's video."""
+        text = self._picker_link_var.get().strip()
+        if not text:
+            self._show_notice("Paste a YouTube link first.", "info")
+            return
+        try:
+            video_id = parse_video_id(text)
+        except ValueError:
+            self._show_notice("That is not a YouTube link.", "info")
+            return
+        self._use_candidate(
+            Candidate(video_id=video_id, title="", duration_s=None, channel="")
+        )
+
+    def _use_candidate(self, candidate: Candidate) -> None:
+        """Save the candidate as the track's video choice, after a track-change check."""
         picker_track = self._picker_track_id
         refresh = getattr(self, "refresh_track", None)
         if callable(refresh):
@@ -1108,10 +1177,6 @@ class MainWindow(ctk.CTk):
         current_track = make_track_id(state.artist, state.title)
         if current_track != picker_track:
             self._show_notice("The track changed. Search for the new track.", "info")
-            return
-        candidate = self._selected_candidate()
-        if candidate is None:
-            self._show_notice("Select a video first.", "info")
             return
         if candidate.video_id == self._picker_current_video:
             self._show_notice("That video is already in use.", "info")
