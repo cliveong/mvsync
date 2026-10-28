@@ -14,12 +14,19 @@ import time
 import wave
 from pathlib import Path
 
-from mvsync import devlog, paths
+from mvsync import config, devlog, paths
 
 SAMPLE_RATE = 22050
-VIDEO_FORMAT = "bestvideo+bestaudio/best"
 VIDEO_ID_RE = re.compile(r"(?:v=|/shorts/|/embed/|youtu\.be/)([A-Za-z0-9_-]{11})")
 BARE_ID_RE = re.compile(r"^([A-Za-z0-9_-]{11})$")
+
+
+def video_format(max_height: int) -> str:
+    """The yt-dlp selector that caps the video height, keeping a video fallback."""
+    return (
+        f"bestvideo[height<={max_height}]+bestaudio/"
+        "bestvideo+bestaudio/best"
+    )
 
 
 def parse_video_id(url: str) -> str:
@@ -34,23 +41,44 @@ def wav_duration_s(path: Path) -> float:
         return handle.getnframes() / handle.getframerate()
 
 
-def fetch_video_wav(video_url: str, *, root: Path | None = None) -> Path:
-    """Download the MV audio track once and cache it under data/cache/."""
-    video_id = parse_video_id(video_url)
-    cache = paths.ensure_dir(paths.cache_dir(root))
-    final = cache / f"{video_id}.wav"
-    if final.is_file() and final.stat().st_size > 44:
-        devlog.log("cache_hit", kind="wav", video_id=video_id)
-        return final
-
-    ytdlp = paths.find_tool("yt-dlp", root)
-    ffmpeg = paths.find_tool("ffmpeg", root)
-    if ytdlp is None or ffmpeg is None:
-        raise RuntimeError(
-            "yt-dlp and ffmpeg are required; install yt-dlp from "
-            "https://github.com/yt-dlp/yt-dlp/releases"
+def _extract_wav_from_video(video: Path, part: Path, ffmpeg: Path) -> bool:
+    """Decode the cached MV's audio track into a mono 22.05 kHz wav."""
+    try:
+        proc = subprocess.run(
+            [
+                str(ffmpeg),
+                "-y",
+                "-i",
+                str(video),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                str(SAMPLE_RATE),
+                "-c:a",
+                "pcm_s16le",
+                str(part),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
+    except OSError:
+        proc = None
+    if proc is None or proc.returncode != 0 or not part.is_file() or part.stat().st_size <= 44:
+        part.unlink(missing_ok=True)
+        return False
+    return True
 
+
+
+def _download_wav(
+    video_url: str,
+    video_id: str,
+    cache: Path,
+    ytdlp: Path,
+    ffmpeg: Path,
+) -> Path:
+    """Download the MV audio through yt-dlp and ffmpeg."""
     started = time.monotonic()
     part = cache / f"{video_id}.part.wav"
     with tempfile.TemporaryFile() as ytdlp_err, tempfile.TemporaryFile() as ffmpeg_err:
@@ -108,12 +136,60 @@ def fetch_video_wav(video_url: str, *, root: Path | None = None) -> Path:
             )
             raise RuntimeError(f"fetching MV audio failed (rc={ytdlp_proc.returncode}): {tail}")
 
+    final = cache / f"{video_id}.wav"
     os.replace(part, final)
-    devlog.log("cache_miss", kind="wav", video_id=video_id, elapsed_s=elapsed_s)
+    devlog.log(
+        "cache_miss",
+        kind="wav",
+        video_id=video_id,
+        elapsed_s=elapsed_s,
+        source="ytdlp",
+    )
     return final
 
 
-def fetch_video_mp4(video_url: str, *, root: Path | None = None) -> Path:
+def fetch_video_wav(video_url: str, *, root: Path | None = None) -> Path:
+    """Extract or download the MV audio track once and cache it under data/cache/."""
+    video_id = parse_video_id(video_url)
+    cache = paths.ensure_dir(paths.cache_dir(root))
+    final = cache / f"{video_id}.wav"
+    if final.is_file() and final.stat().st_size > 44:
+        devlog.log("cache_hit", kind="wav", video_id=video_id)
+        return final
+
+    ytdlp = paths.find_tool("yt-dlp", root)
+    ffmpeg = paths.find_tool("ffmpeg", root)
+    if ytdlp is None or ffmpeg is None:
+        raise RuntimeError(
+            "yt-dlp and ffmpeg are required; install yt-dlp from "
+            "https://github.com/yt-dlp/yt-dlp/releases"
+        )
+
+    video = cache / f"{video_id}.mkv"
+    if video.is_file() and video.stat().st_size > 1_000_000:
+        part = cache / f"{video_id}.part.wav"
+        started = time.monotonic()
+        if _extract_wav_from_video(video, part, ffmpeg):
+            os.replace(part, final)
+            elapsed_s = round(time.monotonic() - started, 2)
+            devlog.log(
+                "cache_miss",
+                kind="wav",
+                video_id=video_id,
+                elapsed_s=elapsed_s,
+                source="video",
+            )
+            return final
+        devlog.log("wav_from_video_failed", video_id=video_id)
+    return _download_wav(video_url, video_id, cache, ytdlp, ffmpeg)
+
+
+def fetch_video_mp4(
+    video_url: str,
+    *,
+    root: Path | None = None,
+    max_height: int | None = None,
+) -> Path:
     """Download a compact copy of the MV video once and cache it under data/cache/.
 
     Streaming the MV through mpv is unreliable (YouTube blocks direct stream
@@ -127,6 +203,8 @@ def fetch_video_mp4(video_url: str, *, root: Path | None = None) -> Path:
         devlog.log("cache_hit", kind="video", video_id=video_id, bytes=final.stat().st_size)
         return final
 
+    if max_height is None:
+        max_height = config.load_max_video_height(root)
     ytdlp = paths.find_tool("yt-dlp", root)
     if ytdlp is None:
         raise RuntimeError(
@@ -139,7 +217,7 @@ def fetch_video_mp4(video_url: str, *, root: Path | None = None) -> Path:
     command = [
         str(ytdlp),
         "-f",
-        VIDEO_FORMAT,
+        video_format(max_height),
         "--merge-output-format",
         "mkv",
         "--no-playlist",

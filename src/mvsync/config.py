@@ -10,6 +10,9 @@ from pathlib import Path
 from mvsync import paths
 
 DEFAULT_CAPTURE_MODE = "process"
+DEFAULT_MAX_VIDEO_HEIGHT = 1080
+MIN_VIDEO_HEIGHT = 144
+MAX_VIDEO_HEIGHT = 4320
 CAPTURE_MODES = ("process", "device")
 LEGACY_CAPTURE_MODES = {"spotify": "process"}
 
@@ -66,6 +69,16 @@ def load_player_exe(root: Path | None = None) -> str:
 def load_dev_log(root: Path | None = None) -> bool:
     """Whether the opt-in developer log is switched on in the config file."""
     return _load(root).get("dev_log") is True
+
+
+def load_max_video_height(root: Path | None = None) -> int:
+    """The persisted video height cap, or 1080 when unset or invalid."""
+    height = _load(root).get("max_video_height")
+    if isinstance(height, bool):
+        return DEFAULT_MAX_VIDEO_HEIGHT
+    if isinstance(height, int) and MIN_VIDEO_HEIGHT <= height <= MAX_VIDEO_HEIGHT:
+        return height
+    return DEFAULT_MAX_VIDEO_HEIGHT
 
 
 def save_player(app_id: str, exe: str, root: Path | None = None) -> None:

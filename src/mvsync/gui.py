@@ -15,7 +15,7 @@ from tkinter import messagebox, ttk
 
 import customtkinter as ctk
 
-from mvsync import config, devlog, gui_theme, paths, session, video_choice
+from mvsync import cleanup, config, devlog, gui_theme, paths, session, video_choice
 from mvsync.align_store import load_alignment, load_newest_alignment, make_track_id
 from mvsync.gui_console import KeySource, LogSink
 from mvsync.mv_audio import parse_video_id
@@ -2098,6 +2098,8 @@ class FixerWindow(ctk.CTk):
 
 def run_gui(root: Path | None = None) -> int:
     """Open the main window and run its mainloop."""
+    with contextlib.suppress(Exception):
+        cleanup.run_startup_cleanup(root)
     window = MainWindow(root=root)
     window.mainloop()
     return 0

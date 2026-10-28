@@ -1607,3 +1607,48 @@ def test_use_video_rechecks_the_track_before_saving(tmp_path):
     assert video_choice.load_video_choice(track_id, tmp_path) is None
     assert window._video_switches.empty()
     assert notices and "track changed" in notices[0]
+
+
+def test_run_gui_cleans_up_before_opening_the_window(monkeypatch, tmp_path):
+    from mvsync import gui
+
+    calls = []
+    monkeypatch.setattr(
+        gui.cleanup,
+        "run_startup_cleanup",
+        lambda root=None: calls.append(("cleanup", root)),
+    )
+
+    class FakeWindow:
+        def __init__(self, root=None):
+            calls.append(("window", root))
+
+        def mainloop(self):
+            calls.append(("mainloop", None))
+
+    monkeypatch.setattr(gui, "MainWindow", FakeWindow)
+
+    assert gui.run_gui(tmp_path) == 0
+    assert calls == [("cleanup", tmp_path), ("window", tmp_path), ("mainloop", None)]
+
+
+def test_run_gui_opens_when_cleanup_fails(monkeypatch, tmp_path):
+    from mvsync import gui
+
+    def boom(root=None):
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(gui.cleanup, "run_startup_cleanup", boom)
+    opened = []
+
+    class FakeWindow:
+        def __init__(self, root=None):
+            opened.append(root)
+
+        def mainloop(self):
+            pass
+
+    monkeypatch.setattr(gui, "MainWindow", FakeWindow)
+
+    assert gui.run_gui(tmp_path) == 0
+    assert opened == [tmp_path]
