@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
-from mvsync import paths
+from mvsync import config, paths
 
 IPC_SOCKET = "mvsync-mpv"
 
@@ -37,6 +37,9 @@ class MpvController:
         ytdlp = paths.find_tool("yt-dlp", self._root)
         if ytdlp is not None:
             extra_args["script_opts"] = [f"ytdl_hook-ytdl_path={ytdlp}"]
+        if config.load_rtx_vsr(self._root):
+            scale = config.load_rtx_vsr_scale(self._root)
+            extra_args["vf"] = f"d3d11vpp=scale={scale:g}:scaling-mode=nvidia"
         self._mpv = MPV(
             ipc_socket=self._ipc_socket,
             mpv_location=str(mpv_path),

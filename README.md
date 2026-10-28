@@ -22,6 +22,11 @@ record the whole output device.
    saved in `data/config.json`; `player`, `player_exe`, `capture_mode`, and
    `dev_log` can also be edited by hand.
 
+NVIDIA users can opt into RTX Video Super Resolution with `"rtx_vsr": true` in
+`data/config.json`; `"rtx_vsr_scale"` sets the upscale factor (default 2.0).
+This needs a D3D11-capable NVIDIA GPU and RTX Video enhancement enabled in the
+NVIDIA App. Leave it off on other GPUs.
+
 mvsync does not provide music, bypass DRM, or redistribute anything. The audio
 comes from the player you already use. Captured audio is local, used only to
 align the video, and deleted after a successful fit. Use your own accounts and

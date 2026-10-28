@@ -59,3 +59,33 @@ def test_max_video_height_ignores_invalid_values(tmp_path):
     for value in (None, "1080", 0, 143, 4321, True):
         write_config(tmp_path, {"max_video_height": value})
         assert config.load_max_video_height(tmp_path) == 1080
+
+
+def test_rtx_vsr_defaults_to_off(tmp_path):
+    assert config.load_rtx_vsr(tmp_path) is False
+
+
+def test_rtx_vsr_reads_true(tmp_path):
+    write_config(tmp_path, {"rtx_vsr": True})
+    assert config.load_rtx_vsr(tmp_path) is True
+
+
+def test_rtx_vsr_ignores_non_bool_values(tmp_path):
+    for value in (None, "true", 1, 0):
+        write_config(tmp_path, {"rtx_vsr": value})
+        assert config.load_rtx_vsr(tmp_path) is False
+
+
+def test_rtx_vsr_scale_defaults_to_2(tmp_path):
+    assert config.load_rtx_vsr_scale(tmp_path) == 2.0
+
+
+def test_rtx_vsr_scale_reads_a_valid_override(tmp_path):
+    write_config(tmp_path, {"rtx_vsr_scale": 1.5})
+    assert config.load_rtx_vsr_scale(tmp_path) == 1.5
+
+
+def test_rtx_vsr_scale_ignores_invalid_values(tmp_path):
+    for value in (None, "1.5", 1.0, 0, -2, 4.1, True, float("nan")):
+        write_config(tmp_path, {"rtx_vsr_scale": value})
+        assert config.load_rtx_vsr_scale(tmp_path) == 2.0

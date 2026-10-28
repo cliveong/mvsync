@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -13,6 +14,9 @@ DEFAULT_CAPTURE_MODE = "process"
 DEFAULT_MAX_VIDEO_HEIGHT = 1080
 MIN_VIDEO_HEIGHT = 144
 MAX_VIDEO_HEIGHT = 4320
+DEFAULT_RTX_VSR_SCALE = 2.0
+MIN_RTX_VSR_SCALE = 1.0
+MAX_RTX_VSR_SCALE = 4.0
 CAPTURE_MODES = ("process", "device")
 LEGACY_CAPTURE_MODES = {"spotify": "process"}
 
@@ -79,6 +83,22 @@ def load_max_video_height(root: Path | None = None) -> int:
     if isinstance(height, int) and MIN_VIDEO_HEIGHT <= height <= MAX_VIDEO_HEIGHT:
         return height
     return DEFAULT_MAX_VIDEO_HEIGHT
+
+
+def load_rtx_vsr(root: Path | None = None) -> bool:
+    """Whether the opt-in NVIDIA RTX Video Super Resolution is enabled."""
+    return _load(root).get("rtx_vsr") is True
+
+
+def load_rtx_vsr_scale(root: Path | None = None) -> float:
+    """The RTX VSR upscale factor, or 2.0 when unset or invalid."""
+    scale = _load(root).get("rtx_vsr_scale")
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)):
+        return DEFAULT_RTX_VSR_SCALE
+    value = float(scale)
+    if not math.isfinite(value) or not MIN_RTX_VSR_SCALE < value <= MAX_RTX_VSR_SCALE:
+        return DEFAULT_RTX_VSR_SCALE
+    return value
 
 
 def save_player(app_id: str, exe: str, root: Path | None = None) -> None:
