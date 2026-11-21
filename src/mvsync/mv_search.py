@@ -145,6 +145,7 @@ def search_candidates(query: str, *, root: Path | None = None) -> list[Candidate
             encoding="utf-8",
             errors="replace",
             timeout=SEARCH_TIMEOUT_S,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except subprocess.TimeoutExpired as exc:
         devlog.log("search_failed", query=query, reason="timeout")

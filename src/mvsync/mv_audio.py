@@ -61,6 +61,7 @@ def _extract_wav_from_video(video: Path, part: Path, ffmpeg: Path) -> bool:
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except OSError:
         proc = None
@@ -95,6 +96,7 @@ def _download_wav(
             ],
             stdout=subprocess.PIPE,
             stderr=ytdlp_err,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         ffmpeg_proc = subprocess.Popen(
             [
@@ -114,6 +116,7 @@ def _download_wav(
             stdin=ytdlp_proc.stdout,
             stdout=subprocess.DEVNULL,
             stderr=ffmpeg_err,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         assert ytdlp_proc.stdout is not None
         ytdlp_proc.stdout.close()
@@ -231,6 +234,7 @@ def fetch_video_mp4(
             command,
             stdout=subprocess.DEVNULL,
             stderr=ytdlp_err,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         elapsed_s = round(time.monotonic() - started, 2)
         produced = [

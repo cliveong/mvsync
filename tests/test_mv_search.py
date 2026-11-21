@@ -1,3 +1,6 @@
+import subprocess
+import types
+
 import pytest
 
 from mvsync import mv_search
@@ -305,3 +308,21 @@ def test_score_gives_the_official_mv_phrase_bonus_once():
         _score(phrase, 170.4, "TAEYEON", "To. X")
         == _score(plain, 170.4, "TAEYEON", "To. X") + 1.0
     )
+
+
+def test_search_candidates_hides_the_ytdlp_console(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["kwargs"] = kwargs
+        return types.SimpleNamespace(returncode=0, stdout='{"id": "abc", "title": "T"}', stderr="")
+
+    monkeypatch.setattr(
+        mv_search.paths, "find_tool", lambda name, root=None: tmp_path / "yt-dlp.exe"
+    )
+    monkeypatch.setattr(mv_search.subprocess, "run", fake_run)
+
+    candidates = mv_search.search_candidates("artist title")
+
+    assert candidates[0].video_id == "abc"
+    assert captured["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW

@@ -1,3 +1,5 @@
+import io
+import subprocess
 import wave
 
 import pytest
@@ -185,3 +187,74 @@ def test_extract_wav_from_video_removes_a_failed_part(tmp_path, monkeypatch):
 
     assert ok is False
     assert not part.exists()
+
+
+def test_fetch_video_mp4_hides_the_ytdlp_console(tmp_path, monkeypatch):
+    cache = tmp_path / "data" / "cache"
+    cache.mkdir(parents=True)
+    ytdlp = tmp_path / "yt-dlp.exe"
+    ytdlp.write_bytes(b"x")
+    captured = []
+
+    def fake_run(args, **kwargs):
+        captured.append(kwargs)
+        (cache / "jNQXAC9IVRw.part.mkv").write_bytes(b"x" * 1_000_001)
+        return type("Process", (), {"returncode": 0})()
+
+    monkeypatch.setattr(
+        mv_audio.paths, "find_tool", lambda name, root=None: ytdlp if name == "yt-dlp" else None
+    )
+    monkeypatch.setattr(mv_audio.subprocess, "run", fake_run)
+
+    mv_audio.fetch_video_mp4("https://youtu.be/jNQXAC9IVRw", root=tmp_path)
+
+    assert captured[0]["creationflags"] == subprocess.CREATE_NO_WINDOW
+
+
+def test_extract_wav_from_video_hides_the_ffmpeg_console(tmp_path, monkeypatch):
+    part = tmp_path / "jNQXAC9IVRw.part.wav"
+    captured = []
+
+    def fake_run(args, **kwargs):
+        captured.append(kwargs)
+        part.write_bytes(b"x" * 100)
+        return type("Process", (), {"returncode": 0})()
+
+    monkeypatch.setattr(mv_audio.subprocess, "run", fake_run)
+
+    ok = mv_audio._extract_wav_from_video(
+        tmp_path / "video.mkv", part, tmp_path / "ffmpeg.exe"
+    )
+
+    assert ok is True
+    assert captured[0]["creationflags"] == subprocess.CREATE_NO_WINDOW
+
+
+def test_download_wav_hides_both_tool_consoles(tmp_path, monkeypatch):
+    captured = []
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            captured.append(kwargs)
+            self.returncode = 0
+            self.stdout = io.BytesIO(b"") if kwargs.get("stdout") is subprocess.PIPE else None
+            (tmp_path / "jNQXAC9IVRw.part.wav").write_bytes(b"x" * 100)
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(mv_audio.subprocess, "Popen", FakePopen)
+
+    result = mv_audio._download_wav(
+        "https://youtu.be/jNQXAC9IVRw",
+        "jNQXAC9IVRw",
+        tmp_path,
+        tmp_path / "yt-dlp.exe",
+        tmp_path / "ffmpeg.exe",
+    )
+
+    assert result == tmp_path / "jNQXAC9IVRw.wav"
+    assert [kwargs["creationflags"] for kwargs in captured] == [
+        subprocess.CREATE_NO_WINDOW,
+        subprocess.CREATE_NO_WINDOW,
+    ]
