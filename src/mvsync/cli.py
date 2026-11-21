@@ -8,9 +8,15 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
+import subprocess
 import sys
+from pathlib import Path
 
 from mvsync import paths
+
+_DETACHED_PROCESS = 0x00000008
+_NO_DETACH_ENV = "MVSYNC_NO_DETACH"
 
 MENU = """
 1) doctor            check environment, devices, and the player session
@@ -177,7 +183,56 @@ def _play(url: str, pick: int | None = None) -> int:
     return run_play(url or None, pick=pick)
 
 
+def _windowed_python(executable: str | Path) -> Path | None:
+    """The pythonw.exe beside ``executable``, or None when already windowed or absent."""
+    exe = Path(executable)
+    if not exe.name or exe.stem.lower().endswith("w"):
+        return None
+    try:
+        candidate = exe.with_name("pythonw.exe")
+        return candidate if candidate.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _spawn_gui_window(pythonw: Path) -> None:
+    """Start the window in its own process, with startup stderr in data/logs."""
+    env = dict(os.environ)
+    parts = [str(paths.src_dir())]
+    parts += [part for part in env.get("PYTHONPATH", "").split(os.pathsep) if part]
+    env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(parts))
+    log_stream = None
+    try:
+        log = paths.ensure_dir(paths.logs_dir()) / "gui-launch.log"
+        log_stream = log.open("w", encoding="utf-8")
+    except OSError:
+        log_stream = None
+    stderr = log_stream if log_stream is not None else subprocess.DEVNULL
+    try:
+        subprocess.Popen(
+            [str(pythonw), "-m", "mvsync", "gui"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr,
+            creationflags=_DETACHED_PROCESS,
+            close_fds=True,
+        )
+    finally:
+        if log_stream is not None:
+            log_stream.close()
+
+
 def _gui() -> int:
+    """Open the window detached so the bootstrap console closes without taking it down."""
+    if not os.environ.get(_NO_DETACH_ENV):
+        pythonw = _windowed_python(sys.executable)
+        if pythonw is not None:
+            try:
+                _spawn_gui_window(pythonw)
+                return 0
+            except OSError:
+                pass
     from mvsync.gui import run_gui
 
     return run_gui()

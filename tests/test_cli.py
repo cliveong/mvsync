@@ -1,10 +1,13 @@
-"""Tests for the doctor report, with fakes standing in for hardware probes."""
+"""Tests for the CLI entry points and the doctor report, with fakes standing in."""
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 from mvsync import capture, cli, config, paths, player_smtc
 
@@ -177,3 +180,92 @@ def test_doctor_reports_when_process_capture_is_not_installed(capsys, monkeypatc
     assert "[doctor] capture:" in out
     assert "process loopback unavailable" in out
     assert "backend=device loopback" in out
+
+
+def _fake_interpreter(tmp_path: Path, *, windowed: bool) -> Path:
+    """A stand-in venv whose python.exe has (or lacks) a sibling pythonw.exe."""
+    exe = tmp_path / "python.exe"
+    exe.write_text("")
+    if windowed:
+        (tmp_path / "pythonw.exe").write_text("")
+    return exe
+
+
+def _fail_detach(pythonw: Path) -> None:
+    pytest.fail("the window was detached instead of opening in this process")
+
+
+def _fake_run_gui(monkeypatch, code: int = 0) -> None:
+    from mvsync import gui
+
+    monkeypatch.setattr(gui, "run_gui", lambda: code)
+
+
+def test_gui_opens_in_a_detached_windowed_process(monkeypatch, tmp_path):
+    exe = _fake_interpreter(tmp_path, windowed=True)
+    spawned = []
+    monkeypatch.setattr(cli.sys, "executable", str(exe))
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda args, **kw: spawned.append((args, kw)))
+    monkeypatch.setattr(cli.paths, "logs_dir", lambda root=None: tmp_path / "logs")
+    monkeypatch.delenv(cli._NO_DETACH_ENV, raising=False)
+    _fake_run_gui(monkeypatch)
+
+    assert cli._gui() == 0
+
+    ((args, kwargs),) = spawned
+    assert args == [str(tmp_path / "pythonw.exe"), "-m", "mvsync", "gui"]
+    assert kwargs["creationflags"] == cli._DETACHED_PROCESS
+    assert kwargs["stdin"] is cli.subprocess.DEVNULL
+    assert kwargs["stdout"] is cli.subprocess.DEVNULL
+    assert str(paths.src_dir()) in kwargs["env"]["PYTHONPATH"].split(os.pathsep)
+    assert (tmp_path / "logs" / "gui-launch.log").exists()
+    # The parent process must not keep a live handle on the launch log.
+    assert kwargs["stderr"].closed
+
+
+def test_gui_runs_in_process_when_already_windowed(monkeypatch, tmp_path):
+    exe = tmp_path / "pythonw.exe"
+    exe.write_text("")
+    monkeypatch.setattr(cli.sys, "executable", str(exe))
+    monkeypatch.setattr(cli, "_spawn_gui_window", _fail_detach)
+    _fake_run_gui(monkeypatch, code=7)
+
+    assert cli._gui() == 7
+
+
+def test_gui_runs_in_process_without_a_windowed_interpreter(monkeypatch, tmp_path):
+    exe = _fake_interpreter(tmp_path, windowed=False)
+    monkeypatch.setattr(cli.sys, "executable", str(exe))
+    monkeypatch.setattr(cli, "_spawn_gui_window", _fail_detach)
+    _fake_run_gui(monkeypatch, code=3)
+
+    assert cli._gui() == 3
+
+
+def test_gui_runs_in_process_when_detaching_is_disabled(monkeypatch, tmp_path):
+    exe = _fake_interpreter(tmp_path, windowed=True)
+    monkeypatch.setattr(cli.sys, "executable", str(exe))
+    monkeypatch.setattr(cli, "_spawn_gui_window", _fail_detach)
+    monkeypatch.setenv(cli._NO_DETACH_ENV, "1")
+    _fake_run_gui(monkeypatch, code=5)
+
+    assert cli._gui() == 5
+
+
+def test_gui_falls_back_in_process_when_the_detached_launch_fails(monkeypatch, tmp_path):
+    exe = _fake_interpreter(tmp_path, windowed=True)
+
+    def boom(args, **kwargs):
+        raise OSError("blocked")
+
+    monkeypatch.setattr(cli.sys, "executable", str(exe))
+    monkeypatch.setattr(cli.subprocess, "Popen", boom)
+    monkeypatch.setattr(cli.paths, "logs_dir", lambda root=None: tmp_path / "logs")
+    monkeypatch.delenv(cli._NO_DETACH_ENV, raising=False)
+    _fake_run_gui(monkeypatch, code=9)
+
+    assert cli._gui() == 9
+
+
+def test_windowed_python_ignores_an_empty_interpreter_path():
+    assert cli._windowed_python("") is None
