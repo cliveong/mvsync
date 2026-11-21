@@ -267,6 +267,39 @@ def test_follow_rough_mode_holds_the_last_frame_at_video_end(tmp_path):
     assert mpv.paused is True
 
 
+def test_follow_seeks_once_while_the_video_settles(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    monkeypatch.setattr(sr, "SEEK_SETTLE_S", 60.0)
+    state = make_state(playing=True, position_s=30.0)
+    alignment = make_alignment("vid", make_track_id(state.artist, state.title))
+    mpv = FakeMpv(time_pos=33.0)
+    bridge = FakeBridge([state, state, state])
+
+    rc = sr._follow(bridge, mpv, alignment.track_id, alignment, 0.0, tmp_path, 0.01)
+
+    seeks = [call for call in mpv.calls if call[0] == "seek"]
+    assert rc == 0
+    assert len(seeks) == 1
+    assert seeks[0][1] == pytest.approx(35.0, abs=0.1)
+
+
+def test_follow_still_pauses_during_a_seek_settle(tmp_path, monkeypatch):
+    import mvsync.sync_runtime as sr
+
+    monkeypatch.setattr(sr, "SEEK_SETTLE_S", 60.0)
+    playing = make_state(playing=True, position_s=30.0)
+    paused = make_state(playing=False, position_s=30.0)
+    alignment = make_alignment("vid", make_track_id(playing.artist, playing.title))
+    mpv = FakeMpv(time_pos=33.0)
+    bridge = FakeBridge([playing, paused, paused])
+
+    rc = sr._follow(bridge, mpv, alignment.track_id, alignment, 0.0, tmp_path, 0.01)
+
+    assert rc == 0
+    assert ("pause", True) in mpv.calls
+
+
 def test_track_wrapped_detects_repeat_one_restart():
     import mvsync.sync_runtime as sr
 

@@ -145,6 +145,18 @@ def test_large_error_seeks():
     assert action.rate == 1.0
 
 
+def test_default_threshold_seeks_at_four_tenths_of_a_second():
+    action = plan(SyncState(50.0, True, 49.6, False), plain_alignment())
+    assert action.seek_video_to_s == 50.0
+    assert action.rate == 1.0
+
+
+def test_error_just_below_the_default_threshold_nudges():
+    action = plan(SyncState(50.0, True, 49.7, False), plain_alignment())
+    assert action.seek_video_to_s is None
+    assert action.rate == pytest.approx(1.015)
+
+
 def test_rate_nudge_is_capped():
     config = PlannerConfig(rate_gain=1.0, max_rate_delta=0.05, seek_threshold_s=10.0)
     action = plan(SyncState(50.0, True, 49.0, False), plain_alignment(), config=config)
@@ -183,7 +195,7 @@ def test_plan_absolute_rate_clamp():
         track_duration_s=100.0,
         anchors=[Anchor(0.0, 0.0), Anchor(119.0, 100.0)],
     )
-    action = plan(SyncState(50.0, True, 59.0, False), alignment)
+    action = plan(SyncState(50.0, True, 59.3, False), alignment)
     assert action.rate == pytest.approx(1.20)
 
 

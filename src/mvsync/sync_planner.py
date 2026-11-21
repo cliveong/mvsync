@@ -21,7 +21,7 @@ class PlannerConfig:
     rate_gain: float = 0.05
     max_rate_delta: float = 0.05
     noop_tolerance_s: float = 0.04
-    seek_threshold_s: float = 0.8
+    seek_threshold_s: float = 0.35
     end_guard_s: float = 0.5
 
 

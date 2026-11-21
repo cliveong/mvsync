@@ -47,6 +47,8 @@ RATE_EPSILON = 1e-4
 TRACK_END_EPS_S = 1.0
 QUEUE_END_GRACE_S = 5.0
 MPV_START_TIMEOUT_S = 90.0
+SEEK_SETTLE_S = 0.4
+SETTLE_SEEK_TOLERANCE_S = 0.1
 
 HOTKEYS = "q quit | r resync | [ ] offset -/+ 50ms | p player play/pause"
 
@@ -338,6 +340,8 @@ def _follow(
     rough_prev_wall: float | None = None
     rough_prev_video: float | None = None
     prep: TrackPrep | None = None
+    settle_target: float | None = None
+    settle_until = 0.0
     try:
         while True:
             if stop_event is not None and stop_event.is_set():
@@ -375,6 +379,8 @@ def _follow(
                 last_rate = 1.0
                 idle_since = None
                 rough_prev_position = rough_prev_wall = rough_prev_video = None
+                settle_target = None
+                settle_until = 0.0
                 continue
 
             request = _next_switch(switches)
@@ -416,6 +422,8 @@ def _follow(
                     last_rate = 1.0
                     idle_since = None
                     rough_prev_position = rough_prev_wall = rough_prev_video = None
+                    settle_target = None
+                    settle_until = 0.0
                     continue
 
             devlog.log(
@@ -452,12 +460,16 @@ def _follow(
                 alignment, offset, frozen, radio = _apply_prepared(
                     mpv, prepared, radio, position, stop_event=stop_event
                 )
+                settle_target = None
+                settle_until = 0.0
             if key == "r":
                 if alignment is not None:
                     target = target_video_s(alignment, position, offset)
                 else:
                     target = max(0.0, position)
                 mpv.seek_absolute(target)
+                settle_target = target
+                settle_until = time.monotonic() + SEEK_SETTLE_S
                 print(f"[play] resynced to {target:.1f}s")
 
             try:
@@ -516,6 +528,15 @@ def _follow(
                     offset,
                     config,
                 )
+                # mpv can keep reporting its pre-seek position for a moment.
+                settle_now = time.monotonic()
+                if (
+                    settle_target is not None
+                    and settle_now < settle_until
+                    and action.seek_video_to_s is not None
+                    and abs(action.seek_video_to_s - settle_target) <= SETTLE_SEEK_TOLERANCE_S
+                ):
+                    action = replace(action, seek_video_to_s=None)
                 devlog.log(
                     "plan",
                     spotify_s=round(position, 3),
@@ -526,6 +547,11 @@ def _follow(
                     rate=action.rate,
                 )
                 last_rate = _apply(mpv, action, last_rate)
+                if action.seek_video_to_s is not None:
+                    settle_target = action.seek_video_to_s
+                    settle_until = time.monotonic() + SEEK_SETTLE_S
+                elif settle_target is not None and time.monotonic() >= settle_until:
+                    settle_target = None
 
             track_duration = (
                 alignment.track_duration_s if alignment is not None else state.duration_s
