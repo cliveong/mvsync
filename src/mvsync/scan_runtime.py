@@ -129,8 +129,9 @@ def _pause_and_rewind(bridge: PlayerBridge, on_progress: Callable[[str], None]) 
         bridge.toggle_play_pause()
         if not _wait_until(lambda: _playback_stopped(bridge), 3.0):
             raise ScanAborted("could not pause the player")
-    bridge.seek(0.0)
-    position = _wait_start_position(bridge)
+    seek_epoch = time.time()
+    seeked = bridge.seek(0.0)
+    position = _wait_start_position(bridge, seek_epoch, seeked)
     if position > 2.0:
         print(f"[scan] warning: the player reports {position:.1f}s, scanning from there")
     return position
@@ -334,17 +335,29 @@ def _playback_stopped(bridge: PlayerBridge) -> bool:
     return state is not None and not state.playing
 
 
-def _wait_start_position(bridge: PlayerBridge) -> float:
+def _wait_start_position(bridge: PlayerBridge, seek_epoch: float, seeked: bool) -> float:
+    """Return where playback starts after the rewind.
+
+    A paused SMTC timeline can keep reporting its pre-seek position for several
+    seconds, so only a timeline refreshed at or after the seek is trusted. When
+    no refresh arrives, an accepted seek means the track starts at zero, while a
+    rejected seek leaves playback at the position it reported.
+    """
     position = 0.0
+    fresh: float | None = None
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
         state = bridge.current()
         if state is not None:
             position = state.position_s
-            if position < 2.0:
-                break
+            if state.updated_epoch_s >= seek_epoch:
+                fresh = position
+                if position < 2.0:
+                    return position
         time.sleep(0.1)
-    return position
+    if fresh is not None:
+        return fresh
+    return 0.0 if seeked else position
 
 
 def _record_until_end(

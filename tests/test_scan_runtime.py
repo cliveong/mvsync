@@ -15,7 +15,12 @@ import pytest
 from mvsync.align_store import make_track_id
 from mvsync.mv_search import Candidate
 from mvsync.player_smtc import PlayerState
-from mvsync.scan_runtime import ScanAborted, _apply_prompt_answer, _record_until_end
+from mvsync.scan_runtime import (
+    ScanAborted,
+    _apply_prompt_answer,
+    _pause_and_rewind,
+    _record_until_end,
+)
 from mvsync.timeline import Alignment, Anchor, HoldSpan
 
 PLAY_PRESS = 1000.0
@@ -187,6 +192,56 @@ def test_brief_pause_then_resume_completes(monkeypatch):
     run_monitor(monkeypatch, state_fn)
 
 
+class StaleSeekBridge:
+    """A paused bridge that keeps serving its pre-seek timeline."""
+
+    def __init__(self, clock: StepClock, *, seek_result: bool = True) -> None:
+        self.clock = clock
+        self.seek_result = seek_result
+
+    def current(self) -> PlayerState:
+        return make_state(6.699, self.clock.now - 20.0, False)
+
+    def seek(self, seconds: float) -> bool:
+        return self.seek_result
+
+
+class FreshSeekBridge:
+    def __init__(self, clock: StepClock) -> None:
+        self.clock = clock
+        self.state = make_state(6.699, clock.now - 20.0, False)
+
+    def current(self) -> PlayerState:
+        return self.state
+
+    def seek(self, seconds: float) -> bool:
+        self.state = make_state(1.2, self.clock.now, False)
+        return True
+
+
+def test_pause_and_rewind_ignores_a_stale_pre_seek_position(monkeypatch):
+    clock = StepClock(PLAY_PRESS)
+    monkeypatch.setattr("mvsync.scan_runtime.time", clock)
+
+    assert _pause_and_rewind(StaleSeekBridge(clock), lambda message: None) == 0.0
+
+
+def test_pause_and_rewind_keeps_the_position_when_the_seek_is_rejected(monkeypatch):
+    clock = StepClock(PLAY_PRESS)
+    monkeypatch.setattr("mvsync.scan_runtime.time", clock)
+
+    bridge = StaleSeekBridge(clock, seek_result=False)
+
+    assert _pause_and_rewind(bridge, lambda message: None) == pytest.approx(6.699)
+
+
+def test_pause_and_rewind_takes_a_fresh_post_seek_position(monkeypatch):
+    clock = StepClock(PLAY_PRESS)
+    monkeypatch.setattr("mvsync.scan_runtime.time", clock)
+
+    assert _pause_and_rewind(FreshSeekBridge(clock), lambda message: None) == pytest.approx(1.2)
+
+
 def _prompt_candidates() -> list[Candidate]:
     return [
         Candidate(video_id=str(index), title=f"t{index}", duration_s=None, channel="")
@@ -254,8 +309,19 @@ class ScanBridge:
     def toggle_play_pause(self) -> None:
         self.toggles.append(self.clock.now)
 
-    def seek(self, seconds: float) -> None:
-        pass
+    def seek(self, seconds: float) -> bool:
+        return True
+
+
+class StaleRewindScanBridge(ScanBridge):
+    """A paused player whose timeline still reports the pre-seek position."""
+
+    def current(self) -> PlayerState:
+        if not self.toggles:
+            return make_state(6.699, self.clock.now - 20.0, True)
+        if len(self.toggles) == 1:
+            return make_state(6.699, self.toggles[0] - 20.0, False)
+        return super().current()
 
 
 class FakeRecorder:
@@ -281,14 +347,23 @@ VIDEO_ID = "ulr0muQKjk0"
 SCAN_URL = f"https://youtu.be/{VIDEO_ID}"
 
 
-def run_scan(monkeypatch, tmp_path, *, align, fetch=None, peak_db=-30.0, backend=None):
+def run_scan(
+    monkeypatch,
+    tmp_path,
+    *,
+    align,
+    fetch=None,
+    peak_db=-30.0,
+    backend=None,
+    bridge_cls=ScanBridge,
+):
     import builtins
 
     from mvsync import scan_runtime, session
 
     clock = StepClock(PLAY_PRESS)
     toggles: list[float] = []
-    bridge = ScanBridge(clock, toggles)
+    bridge = bridge_cls(clock, toggles)
     FakeRecorder.instances = []
     monkeypatch.setattr("mvsync.scan_runtime.time", clock)
     monkeypatch.setattr(scan_runtime, "PlayerBridge", lambda: bridge)
@@ -329,8 +404,8 @@ def test_scan_aborts_on_blank_metadata(tmp_path, monkeypatch, capsys):
         def toggle_play_pause(self) -> None:
             pass
 
-        def seek(self, seconds: float) -> None:
-            pass
+        def seek(self, seconds: float) -> bool:
+            return True
 
     import builtins
 
@@ -409,6 +484,34 @@ def test_scan_deletes_recording_after_saving_its_map(tmp_path, monkeypatch):
     assert not recording_path(tmp_path).exists()
     store = paths.ensure_dir(paths.alignments_dir(tmp_path))
     assert alignment_path(store, VIDEO_ID, TRACK_ID).is_file()
+
+
+def test_scan_ignores_a_stale_pre_seek_position(tmp_path, monkeypatch):
+    from mvsync import paths
+    from mvsync.align_store import load_alignment
+
+    alignment = Alignment(
+        video_id=VIDEO_ID,
+        track_id=TRACK_ID,
+        video_duration_s=40.0,
+        track_duration_s=DURATION,
+        anchors=[Anchor(video_s=0.0, spotify_s=0.0), Anchor(video_s=20.0, spotify_s=20.0)],
+    )
+    video_file = tmp_path / "vid.mp4"
+    video_file.write_bytes(b"x" * 32)
+
+    rc = run_scan(
+        monkeypatch,
+        tmp_path,
+        align=lambda *args, **kwargs: (alignment, VIDEO_ID),
+        fetch=lambda url, root=None: video_file,
+        bridge_cls=StaleRewindScanBridge,
+    )
+
+    assert rc == 0
+    loaded = load_alignment(paths.alignments_dir(tmp_path), VIDEO_ID, TRACK_ID)
+    assert loaded is not None
+    assert loaded[1] == pytest.approx(0.0)
 
 
 def test_scan_keeps_the_map_when_the_video_download_fails(tmp_path, monkeypatch, capsys):
